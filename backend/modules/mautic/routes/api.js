@@ -655,6 +655,21 @@ router.put("/clients/:id", async (req, res) => {
       data: updateData,
     });
 
+    // If name was updated and there's a linked Client record, update it too
+    if (name && client.clientId) {
+      try {
+        const updatedClient = await prisma.client.update({
+          where: { id: client.clientId },
+          data: { name: name }
+        });
+        logger.info(`✅ Synced Client table name to: ${name} (Client ID: ${client.clientId})`);
+      } catch (syncError) {
+        logger.error(`⚠️ Failed to sync Client table name for MauticClient ${id}:`, syncError);
+      }
+    } else if (name && !client.clientId) {
+      logger.warn(`⚠️ MauticClient ${id} has no linked Client record (clientId is null)`);
+    }
+
     // If historical date range provided during update, backfill reports
     if (fromDate && toDate) {
       logger.debug(
@@ -1485,6 +1500,8 @@ router.get("/sync/status", async (req, res) => {
       startTime: currentSyncStartTime,
       syncType: currentSyncType,
       lastSyncAt: lastSyncAt,
+      lastUpdated: lastSyncAt, // Alias for frontend compatibility
+      lastSync: lastSyncAt, // Additional alias
     },
   });
 });

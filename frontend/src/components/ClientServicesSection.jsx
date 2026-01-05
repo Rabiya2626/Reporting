@@ -72,11 +72,9 @@ const ClientServicesSection = ({ selectedClient, goBackToClients, openMauticCamp
             </div>
 
             {/* metrics in service level view */}
-            <div className="my-2 flex flex-col w-full p-1 bg-blue-50 border border-gray-100 rounded-md">
-                {selectedService === 'dropcowboy' && <DropCowboyServiceStats selectedClient={selectedClient} />}
-
-                {selectedService === 'mautic' && <MauticServiceStats selectedClient={selectedClient} />}
-            </div>
+            {selectedService === 'mautic' && <div className="my-2 flex flex-col w-full p-1 bg-blue-50 border border-gray-100 rounded-md">
+                {<MauticServiceStats selectedClient={selectedClient} />}
+            </div>}
 
             {/* Performance Widgets */}
             <div className="my-4">

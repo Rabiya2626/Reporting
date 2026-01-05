@@ -4,9 +4,11 @@ import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts'
 import { useMetrics } from '../../hooks/dropCowboy/useDropCowboy'
 
 const formatNumber = (num) => {
+  console.log("total stat", num);
+  
   if (num === null || num === undefined) return '0'
-  if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M'
-  if (num >= 1000) return (num / 1000).toFixed(1) + 'K'
+  if (num >= 1000000) return (Math.floor(num / 100000) / 10).toFixed(1) + 'M'
+  if (num >= 1000) return (Math.floor(num / 100) / 10).toFixed(1) + 'K'
   return num.toLocaleString()
 }
 
@@ -179,7 +181,7 @@ const VoicemailPerformanceWidget = ({ clientName }) => {
       </div>
 
       {pieChartData.length > 0 && (
-        <div className="h-40 flex items-center justify-center">
+        <div className="h-48 flex items-center justify-center">
           <ResponsiveContainer width="100%" height="100%">
             <PieChart>
               <Pie

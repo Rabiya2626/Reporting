@@ -246,8 +246,8 @@ const Dashboard = () => {
   }
 
   const formatNumber = (num) => {
-    if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M'
-    if (num >= 1000) return (num / 1000).toFixed(1) + 'K'
+    if (num >= 1000000) return (Math.floor(num / 100000) / 10).toFixed(1) + 'M'
+    if (num >= 1000) return (Math.floor(num / 100) / 10).toFixed(1) + 'K'
     return num?.toString() || '0'
   }
 
@@ -276,19 +276,38 @@ const Dashboard = () => {
 
   const emailChartData = useMemo(() => {
     if (!emailMetrics?.topEmails) return []
-    return emailMetrics.topEmails.slice(0, 7).map((email, idx) => ({
-      name: email.name?.substring(0, 15) || `Email ${idx + 1}`,
-      fullName: email.name || `Email ${idx + 1}`,
-      clientName: email.clientName || '',
-      sent: email.sent || email.sentCount || 0,
-      opened: email.read || email.readCount || 0,
-      clicked: email.clicked || email.clickedCount || 0,
-      bounced: email.bounced || 0,
-      unsubscribed: email.unsubscribed || 0,
-      openRate: parseFloat(email.openRate || email.readRate || 0),
-      clickRate: parseFloat(email.clickRate || 0),
-      unsubRate: parseFloat(email.unsubscribeRate || 0)
-    }))
+    
+    // Track used names to ensure uniqueness
+    const usedNames = new Set()
+    
+    return emailMetrics.topEmails.slice(0, 6).map((email, idx) => {
+      const fullName = email.name || `Email ${idx + 1}`
+      let displayName = fullName.length > 15 ? fullName.substring(0, 12) + '...' : fullName
+      
+      // Ensure unique display names by appending number if needed
+      let uniqueName = displayName
+      let counter = 1
+      while (usedNames.has(uniqueName)) {
+        uniqueName = `${displayName} (${counter})`
+        counter++
+      }
+      usedNames.add(uniqueName)
+      
+      return {
+        id: `email-${idx}-${email.id || email.emailId || idx}`, // Unique key for chart
+        name: uniqueName,
+        fullName: fullName,
+        clientName: email.clientName || '',
+        sent: email.sent || email.sentCount || 0,
+        opened: email.read || email.readCount || 0,
+        clicked: email.clicked || email.clickedCount || 0,
+        bounced: email.bounced || 0,
+        unsubscribed: email.unsubscribed || 0,
+        openRate: parseFloat(email.openRate || email.readRate || 0),
+        clickRate: parseFloat(email.clickRate || 0),
+        unsubRate: parseFloat(email.unsubscribeRate || 0)
+      }
+    })
   }, [emailMetrics])
 
   const voicemailChartData = useMemo(() => {
@@ -347,15 +366,15 @@ const Dashboard = () => {
         <>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
             <SyncIndicator 
-              label="Mautic" 
-              status={syncStatus.mautic} 
-              lastSync={syncStatus.mautic?.lastSyncAt || syncStatus.mautic?.lastSync}
+              label="Autovation" 
+              status={syncStatus.mautic?.data} 
+              lastSync={syncStatus.mautic?.data?.lastUpdated || syncStatus.mautic?.data?.lastSync || syncStatus.mautic?.data?.lastSyncAt}
               isActive={syncProgress?.isActive}
             />
             <SyncIndicator 
-              label="DropCowboy" 
-              status={syncStatus.dropCowboy} 
-              lastSync={syncStatus.dropCowboy?.lastSyncAt || voicemailMetrics?.lastUpdated}
+              label="Ringless Voicemail" 
+              status={syncStatus.dropCowboy?.data} 
+              lastSync={syncStatus.dropCowboy?.data?.lastSyncAt || syncStatus.dropCowboy?.data?.lastUpdated || voicemailMetrics?.lastUpdated}
             />
           </div>
           {syncProgress?.isActive && syncProgress?.clientList?.length > 0 && (
@@ -466,7 +485,13 @@ const Dashboard = () => {
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={emailChartData}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
-                    <XAxis dataKey="name" tick={{ fontSize: 10 }} />
+                    <XAxis 
+                      dataKey="name" 
+                      tick={{ fontSize: 10 }} 
+                      angle={-15}
+                      textAnchor="end"
+                      height={50}
+                    />
                     <YAxis tick={{ fontSize: 10 }} />
                     <Tooltip 
                       content={({ active, payload }) => {

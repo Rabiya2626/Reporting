@@ -270,6 +270,28 @@ class DataService {
         whereClause.campaignId = {
           in: filters.campaignIds,
         };
+      } else {
+        // ALWAYS filter to only show campaigns linked to Mautic clients (unless specific campaignIds provided)
+        // Get all Mautic client IDs
+        const mauticClients = await prisma.client.findMany({
+          where: { clientType: "mautic" },
+          select: { id: true },
+        });
+
+        const mauticClientIds = mauticClients.map((c) => c.id);
+
+        // Get campaigns linked ONLY to Mautic clients
+        const mauticLinkedCampaigns = await prisma.dropCowboyCampaign.findMany({
+          where: {
+            clientId: { in: mauticClientIds },
+          },
+          select: { campaignId: true },
+        });
+
+        const mauticCampaignIds = mauticLinkedCampaigns.map((c) => c.campaignId);
+
+        // Filter campaigns to only those linked to Mautic clients
+        whereClause.campaignId = { in: mauticCampaignIds };
       }
 
       // Get campaigns with client information
@@ -444,8 +466,16 @@ class DataService {
       );
 
       // Calculate overall metrics
+      // Build record-level where clause that matches the campaign filter
+      const recordWhereClause = {};
+      
+      if (whereClause.campaignId) {
+        // If campaigns are filtered by IDs, filter records by those campaign IDs
+        recordWhereClause.campaignId = whereClause.campaignId;
+      }
+
       const overallAgg = await prisma.dropCowboyCampaignRecord.aggregate({
-        where: whereClause,
+        where: recordWhereClause,
         _count: true,
         _sum: {
           cost: true,
@@ -463,7 +493,7 @@ class DataService {
       // Get success/failure counts
       const successCount = await prisma.dropCowboyCampaignRecord.count({
         where: {
-          ...whereClause,
+          ...recordWhereClause,
           status: {
             in: [
               "sent",
@@ -479,7 +509,7 @@ class DataService {
 
       const failureCount = await prisma.dropCowboyCampaignRecord.count({
         where: {
-          ...whereClause,
+          ...recordWhereClause,
           status: {
             in: ["failed", "failure", "error", "FAILED", "FAILURE", "ERROR"],
           },

@@ -419,7 +419,7 @@ router.get('/:id', authenticate, canManageUser, async (req, res) => {
 // @access  Private
 router.put('/:id', authenticate, canManageUser, ensureOwnerGuard(), async (req, res) => {
   try {
-    const { name, email, isActive, customRoleId, phone, managerIds } = req.body;
+    const { name, email, isActive, customRoleId, managerIds } = req.body;
     const currentUser = req.user;
     const userId = parseInt(req.params.id);
 
@@ -439,7 +439,6 @@ router.put('/:id', authenticate, canManageUser, ensureOwnerGuard(), async (req, 
     if (name) updateData.name = name;
     if (email) updateData.email = email;
     if (typeof isActive === 'boolean') updateData.isActive = isActive;
-    if (phone !== undefined) updateData.phone = phone || null;
     
     // Handle customRoleId - users with Users.Update permission can assign roles
     if (customRoleId !== undefined && userHasPermission(currentUser, 'Users', 'Update')) {
@@ -559,7 +558,11 @@ router.put('/:id', authenticate, canManageUser, ensureOwnerGuard(), async (req, 
     });
   } catch (error) {
     logger.error('Error updating user', { error: error.message, stack: error.stack, userId: req.params.id });
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error',
+      error: error.message 
+    });
   }
 });
 

@@ -179,10 +179,21 @@ router.post("/fetch", async (req, res) => {
 });
 
 // Get sync status
-router.get("/sync-status", (req, res) => {
+router.get("/sync-status", async (req, res) => {
   const elapsedSeconds = isSyncInProgress
     ? Math.floor((Date.now() - currentSyncStartTime) / 1000)
     : 0;
+
+  // Get last successful sync from database
+  let lastSyncAt = null;
+  try {
+    const lastSync = await dataService.getSyncLogs(1);
+    if (lastSync && lastSync.length > 0 && lastSync[0].timestamp) {
+      lastSyncAt = lastSync[0].timestamp;
+    }
+  } catch (error) {
+    logger.error("Error fetching last sync time:", error);
+  }
 
   res.json({
     success: true,
@@ -190,6 +201,8 @@ router.get("/sync-status", (req, res) => {
       isSyncing: isSyncInProgress,
       elapsedTime: elapsedSeconds,
       startTime: currentSyncStartTime,
+      lastSyncAt: lastSyncAt,
+      lastUpdated: lastSyncAt, // Alias for frontend compatibility
     },
   });
 });

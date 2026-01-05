@@ -7,8 +7,8 @@ import {
 
 const formatNumber = (num) => {
   if (num === null || num === undefined) return '0'
-  if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M'
-  if (num >= 1000) return (num / 1000).toFixed(1) + 'K'
+  if (num >= 1000000) return (Math.floor(num / 100000) / 10).toFixed(1) + 'M'
+  if (num >= 1000) return (Math.floor(num / 100) / 10).toFixed(1) + 'K'
   return num.toLocaleString()
 }
 
@@ -37,7 +37,7 @@ const RateBox = ({ label, value, isNegative = false }) => (
   <div className="text-center p-2 bg-gray-50 rounded-lg">
     <div className="text-xs text-gray-500 mb-1">{label}</div>
     <div className={`text-lg font-bold ${isNegative ? 'text-red-600' : 'text-blue-600'}`}>
-      {typeof value === 'number' ? value.toFixed(1) : '0'}%
+      {typeof value === 'number' ? (Math.floor(value * 10) / 10).toFixed(1) : '0'}%
     </div>
   </div>
 )
@@ -78,14 +78,14 @@ const EmailPerformanceWidget = ({ clientId, clientName }) => {
     return stats.topEmails.slice(0, 5).map(email => ({
       name: email.name?.length > 15 ? email.name.substring(0, 15) + '...' : email.name,
       fullName: email.name,
-      sent: email.sentCount || 0,
-      opened: email.readCount || 0,
-      clicked: email.clickedCount || 0,
-      bounced: email.bounced || 0,
-      unsubscribed: email.unsubscribed || 0,
-      openRate: typeof email.readRate === 'number' ? email.readRate.toFixed(1) : '0',
-      clickRate: typeof email.clickRate === 'number' ? email.clickRate.toFixed(1) : '0',
-      unsubRate: typeof email.unsubscribeRate === 'number' ? email.unsubscribeRate.toFixed(1) : '0'
+      sent: email.stats?.sent || 0,
+      opened: email.stats?.read || 0,
+      clicked: email.stats?.clicked || 0,
+      bounced: email.stats?.bounced || 0,
+      unsubscribed: email.stats?.unsubscribed || 0,
+      openRate: typeof email.stats?.openRate === 'number' ? (Math.floor(email.stats.openRate * 10) / 10).toFixed(1) : '0',
+      clickRate: typeof email.stats?.clickRate === 'number' ? (Math.floor(email.stats.clickRate * 10) / 10).toFixed(1) : '0',
+      unsubRate: typeof email.stats?.unsubscribeRate === 'number' ? (Math.floor(email.stats.unsubscribeRate * 10) / 10).toFixed(1) : '0'
     }))
   }, [stats])
 
@@ -111,7 +111,7 @@ const EmailPerformanceWidget = ({ clientId, clientName }) => {
     )
   }
 
-  if (!stats?.clientStats) {
+  if (!stats?.stats) {
     return (
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
         <div className="text-center py-4">
@@ -122,7 +122,7 @@ const EmailPerformanceWidget = ({ clientId, clientName }) => {
     )
   }
 
-  const { clientStats } = stats
+  const clientStats = stats.stats
 
   return (
     <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
