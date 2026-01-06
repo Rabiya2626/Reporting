@@ -11,11 +11,7 @@ class MauticDataService {
    */
   async saveEmails(clientId, emails) {
     try {
-<<<<<<< HEAD
-      logger.debug(`💾 Saving ${emails.length} emails for client ${clientId}...`);
-=======
       console.log(`💾 BULK SAVING ${emails.length} emails for client ${clientId}...`);
->>>>>>> origin/sohail-mautic-contacts
 
       if (emails.length === 0) {
         logger.debug(`✅ No emails to save`);
@@ -65,22 +61,8 @@ class MauticDataService {
           skipDuplicates: true
         });
 
-<<<<<<< HEAD
-            if (result.createdAt.getTime() === result.updatedAt.getTime()) {
-              created++;
-            } else {
-              updated++;
-            }
-          } catch (error) {
-            logger.error(`Failed to save email ${email.id}:`, error.message);
-          }
-        }));
-
-        logger.debug(`   Saved ${Math.min(i + BATCH_SIZE, emails.length)}/${emails.length} emails...`);
-=======
         totalCreated += result.count;
         console.log(`   Processed ${Math.min(i + BATCH_SIZE, emails.length)}/${emails.length} emails (${totalCreated} new)...`);
->>>>>>> origin/sohail-mautic-contacts
       }
 
       // Update client email count
@@ -89,11 +71,7 @@ class MauticDataService {
         data: { totalEmails: emails.length }
       });
 
-<<<<<<< HEAD
-      logger.debug(`✅ Emails saved: ${created} created, ${updated} updated`);
-=======
       console.log(`✅ BULK INSERT DONE: ${totalCreated} new emails (${emails.length - totalCreated} duplicates skipped)`);
->>>>>>> origin/sohail-mautic-contacts
 
       return {
         success: true,
@@ -115,13 +93,8 @@ class MauticDataService {
    */
   async saveCampaigns(clientId, campaigns) {
     try {
-<<<<<<< HEAD
-      logger.debug(`\n💾 Saving ${campaigns.length} campaigns for client ${clientId}...`);
-      logger.debug(`   Campaign IDs: ${campaigns.map(c => c.id).join(', ')}`);
-=======
       console.log(`\n💾 BULK SAVING ${campaigns.length} campaigns for client ${clientId}...`);
       console.log(`   Campaign IDs: ${campaigns.map(c => c.id).join(', ')}`);
->>>>>>> origin/sohail-mautic-contacts
 
       if (campaigns.length === 0) {
         logger.debug(`✅ No campaigns to save`);
@@ -136,73 +109,6 @@ class MauticDataService {
       for (let i = 0; i < campaigns.length; i += BATCH_SIZE) {
         const batch = campaigns.slice(i, i + BATCH_SIZE);
 
-<<<<<<< HEAD
-        await Promise.all(batch.map(async (campaign) => {
-          try {
-            logger.debug(`   Processing campaign ID ${campaign.id}: ${campaign.name}`);
-
-            // Extract category - handle both object and string formats
-            let categoryValue = null;
-            if (campaign.category) {
-              if (typeof campaign.category === 'string') {
-                categoryValue = campaign.category;
-              } else if (typeof campaign.category === 'object') {
-                // Extract title or alias from category object
-                categoryValue = campaign.category.title || campaign.category.alias || campaign.category.name || null;
-              }
-            }
-
-            const campaignData = {
-              mauticCampaignId: String(campaign.id),
-              name: campaign.name || '',
-              description: campaign.description || null,
-              isPublished: campaign.isPublished || false,
-              publishUp: campaign.publishUp ? new Date(campaign.publishUp) : null,
-              publishDown: campaign.publishDown ? new Date(campaign.publishDown) : null,
-              dateAdded: campaign.dateAdded ? new Date(campaign.dateAdded) : null,
-              createdBy: campaign.createdBy ? String(campaign.createdBy) : null,
-              category: categoryValue,
-              allowRestart: campaign.allowRestart || false,
-              clientId: clientId
-            };
-
-            const result = await prisma.mauticCampaign.upsert({
-              where: {
-                clientId_mauticCampaignId: {
-                  clientId: clientId,
-                  mauticCampaignId: String(campaign.id)
-                }
-              },
-              update: {
-                ...campaignData,
-                updatedAt: new Date()
-              },
-              create: campaignData
-            });
-
-            if (result.createdAt.getTime() === result.updatedAt.getTime()) {
-              created++;
-              logger.debug(`   ✅ Campaign ${campaign.id} created`);
-            } else {
-              updated++;
-              logger.debug(`   ✅ Campaign ${campaign.id} updated`);
-            }
-          } catch (error) {
-            logger.error(`❌ Failed to save campaign ${campaign.id} (${campaign.name}):`, error.message);
-            if (error.stack) {
-              logger.error(`   Stack trace:`, error.stack);
-            }
-            // Log the actual data we're trying to save, not the full campaign object
-            logger.error(`   Attempted to save:`, {
-              mauticCampaignId: campaign.id,
-              name: campaign.name,
-              isPublished: campaign.isPublished,
-              dateAdded: campaign.dateAdded,
-              createdBy: campaign.createdBy,
-              category: campaign.category
-            });
-            failed++;
-=======
         const campaignData = batch.map(campaign => {
           // Extract category - handle both object and string formats
           let categoryValue = null;
@@ -212,12 +118,8 @@ class MauticDataService {
             } else if (typeof campaign.category === 'object') {
               categoryValue = campaign.category.title || campaign.category.alias || campaign.category.name || null;
             }
->>>>>>> origin/sohail-mautic-contacts
           }
 
-<<<<<<< HEAD
-        logger.debug(`   Saved ${Math.min(i + BATCH_SIZE, campaigns.length)}/${campaigns.length} campaigns...`);
-=======
           return {
             mauticCampaignId: String(campaign.id),
             name: campaign.name || '',
@@ -242,7 +144,6 @@ class MauticDataService {
 
         totalCreated += result.count;
         console.log(`   Processed ${Math.min(i + BATCH_SIZE, campaigns.length)}/${campaigns.length} campaigns (${totalCreated} new)...`);
->>>>>>> origin/sohail-mautic-contacts
       }
 
       // Update client campaign count
@@ -251,11 +152,7 @@ class MauticDataService {
         data: { totalCampaigns: campaigns.length }
       });
 
-<<<<<<< HEAD
-      logger.debug(`✅ Campaigns saved: ${created} created, ${updated} updated, ${failed} failed`);
-=======
       console.log(`✅ BULK INSERT DONE: ${totalCreated} new campaigns (${campaigns.length - totalCreated} duplicates skipped)`);
->>>>>>> origin/sohail-mautic-contacts
 
       return {
         success: true,
@@ -278,11 +175,7 @@ class MauticDataService {
    */
   async saveSegments(clientId, segments) {
     try {
-<<<<<<< HEAD
-      logger.debug(`💾 Saving ${segments.length} segments for client ${clientId}...`);
-=======
       console.log(`💾 BULK SAVING ${segments.length} segments for client ${clientId}...`);
->>>>>>> origin/sohail-mautic-contacts
 
       if (segments.length === 0) {
         logger.debug(`✅ No segments to save`);
@@ -297,47 +190,6 @@ class MauticDataService {
       for (let i = 0; i < segments.length; i += BATCH_SIZE) {
         const batch = segments.slice(i, i + BATCH_SIZE);
 
-<<<<<<< HEAD
-        await Promise.all(batch.map(async (segment) => {
-          try {
-            const segmentData = {
-              mauticSegmentId: String(segment.id),
-              name: segment.name || '',
-              alias: segment.alias || null,
-              description: segment.description || null,
-              isPublished: segment.isPublished || false,
-              filters: segment.filters || null,
-              contactCount: segment.leadCount || 0,
-              clientId: clientId,
-              dateAdded: segment.dateAdded ? new Date(segment.dateAdded) : new Date()
-            };
-
-            const result = await prisma.mauticSegment.upsert({
-              where: {
-                clientId_mauticSegmentId: {
-                  clientId: clientId,
-                  mauticSegmentId: String(segment.id)
-                }
-              },
-              update: {
-                ...segmentData,
-                updatedAt: new Date()
-              },
-              create: segmentData
-            });
-
-            if (result.createdAt.getTime() === result.updatedAt.getTime()) {
-              created++;
-            } else {
-              updated++;
-            }
-          } catch (error) {
-            logger.error(`Failed to save segment ${segment.id}:`, error.message);
-          }
-        }));
-
-        logger.debug(`   Saved ${Math.min(i + BATCH_SIZE, segments.length)}/${segments.length} segments...`);
-=======
         const segmentData = batch.map(segment => ({
           mauticSegmentId: String(segment.id),
           name: segment.name || '',
@@ -359,7 +211,6 @@ class MauticDataService {
 
         totalCreated += result.count;
         console.log(`   Processed ${Math.min(i + BATCH_SIZE, segments.length)}/${segments.length} segments (${totalCreated} new)...`);
->>>>>>> origin/sohail-mautic-contacts
       }
 
       // Update client segment count
@@ -368,11 +219,7 @@ class MauticDataService {
         data: { totalSegments: segments.length }
       });
 
-<<<<<<< HEAD
-      logger.debug(`✅ Segments saved: ${created} created, ${updated} updated`);
-=======
       console.log(`✅ BULK INSERT DONE: ${totalCreated} new segments (${segments.length - totalCreated} duplicates skipped)`);
->>>>>>> origin/sohail-mautic-contacts
 
       return {
         success: true,

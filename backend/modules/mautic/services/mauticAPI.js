@@ -254,10 +254,6 @@ class MauticAPIService {
         }
       }
 
-<<<<<<< HEAD
-      logger.debug(`✅ Total segments fetched: ${segments.length}`);
-      return segments;
-=======
       console.log(`✅ Total segments fetched: ${segments.length}`);
       
       // ⚡ COUNT CONTACTS FOR EACH SEGMENT
@@ -295,7 +291,6 @@ class MauticAPIService {
       console.log(`\n✅ Contact count complete! Total across all segments: ${totalContacts}`);
       
       return segmentsWithCounts;
->>>>>>> origin/sohail-mautic-contacts
     } catch (error) {
       logger.error('Error fetching segments:', error.message);
       throw new Error(`Failed to fetch segments: ${error.message}`);
