@@ -4,6 +4,8 @@
 
 # System files
 .DS_Store
+backend/.env*
+
 
 # Environment files
 /backend/.env
