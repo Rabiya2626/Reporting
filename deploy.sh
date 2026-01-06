@@ -56,11 +56,12 @@ load_node() {
 
 # Test database connectivity
 test_db_connection() {
-    print_step "Testing database connection..."
+    print_step "Testing database server connectivity..."
     
     cd "$BACKEND_DIR"
     
-    # Create a temporary test script
+    # Create a temporary test script that checks server connection
+    # This allows for database to not exist yet (Prisma will create it)
     cat > /tmp/test_db_connection.js << 'TESTEOF'
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
@@ -68,10 +69,22 @@ const prisma = new PrismaClient();
 async function main() {
     try {
         await prisma.$connect();
-        console.log('SUCCESS');
+        console.log('SUCCESS: Database exists and connected');
         await prisma.$disconnect();
         process.exit(0);
     } catch (error) {
+        // Check if error is just about database not existing (P1003)
+        if (error.code === 'P1003' || error.message.includes('Unknown database') || error.message.includes('database') && error.message.includes('does not exist')) {
+            console.log('INFO: Database does not exist yet (will be created by Prisma)');
+            process.exit(2); // Special exit code for "DB doesn't exist"
+        }
+        // Check for connection/auth errors
+        if (error.code === 'P1001' || error.message.includes('Can\'t reach') || error.message.includes('authentication failed')) {
+            console.error('FAILED: Cannot connect to database server');
+            console.error(error.message);
+            process.exit(1);
+        }
+        // Unknown error
         console.error('FAILED:', error.message);
         process.exit(1);
     }
@@ -81,13 +94,21 @@ main();
 TESTEOF
 
     # Run the test (requires prisma client to be generated first)
-    if node /tmp/test_db_connection.js 2>&1 | grep -q "SUCCESS"; then
-        print_success "Database connection successful"
+    local output=$(node /tmp/test_db_connection.js 2>&1)
+    local exit_code=$?
+    
+    if [ $exit_code -eq 0 ]; then
+        print_success "Database server connected (database exists)"
+        rm -f /tmp/test_db_connection.js
+        return 0
+    elif [ $exit_code -eq 2 ]; then
+        print_warning "Database doesn't exist yet (Prisma will create it)"
         rm -f /tmp/test_db_connection.js
         return 0
     else
-        print_error "Database connection failed"
-        print_info "Please check your database credentials and ensure the server is running"
+        print_error "Database server connection failed"
+        echo "$output" | grep -E "(FAILED|Error)" | head -3
+        print_info "Check: credentials, server running, firewall, host reachable"
         rm -f /tmp/test_db_connection.js
         return 1
     fi
@@ -145,6 +166,15 @@ check_prerequisites() {
         print_success "PM2 $(pm2 -v) installed"
     else
         print_warning "PM2 not found (will install if needed)"
+    fi
+    
+    # Check disk space (minimum 500MB free)
+    local available_mb=$(df -m "$SCRIPT_DIR" | tail -1 | awk '{print $4}')
+    if [ "$available_mb" -lt 500 ]; then
+        print_error "Insufficient disk space: ${available_mb}MB available, 500MB required"
+        missing=1
+    else
+        print_success "Disk space: ${available_mb}MB available"
     fi
     
     if [ $missing -eq 1 ]; then
@@ -360,14 +390,8 @@ setup_database() {
         node seed-notifications.js
         cd ..
         print_success "Notification templates seeded"
-    fi
-    
-    # Ask about full database seed
-    read -p "Run full database seed? [y/N]: " do_seed
-    if [ "$do_seed" == "y" ] || [ "$do_seed" == "Y" ]; then
-        print_step "Seeding database..."
-        npx prisma db seed
-        print_success "Database seeded"
+    else
+        print_warning "Notification seed file not found, skipping..."
     fi
 }
 
@@ -380,11 +404,41 @@ ensure_pm2() {
     fi
 }
 
+# Check port availability
+check_port_available() {
+    local port=$1
+    
+    if lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; then
+        local pid=$(lsof -ti:$port 2>/dev/null)
+        print_warning "Port $port is already in use (PID: $pid)"
+        
+        # Check if it's our own PM2 process
+        if pm2 describe digitalbevy &>/dev/null; then
+            print_info "Existing DigitalBevy instance detected, will restart..."
+            return 0
+        fi
+        
+        echo ""
+        read -p "Stop process on port $port and continue? [y/N]: " stop_process
+        if [ "$stop_process" != "y" ] && [ "$stop_process" != "Y" ]; then
+            print_error "Deployment aborted. Please free port $port and try again."
+            exit 1
+        fi
+        return 0
+    else
+        print_success "Port $port is available"
+        return 0
+    fi
+}
+
 # Start application
 start_application() {
     print_header "Starting Application"
     
     cd "$BACKEND_DIR"
+    
+    # Check if port is available
+    check_port_available "$APP_PORT"
     
     # Ensure PM2 is available
     ensure_pm2
@@ -394,16 +448,18 @@ start_application() {
     
     # Check if ecosystem.config.cjs exists
     if [ -f "ecosystem.config.cjs" ]; then
-        # Update ecosystem config with correct port
         print_step "Starting with ecosystem.config.cjs..."
         pm2 start ecosystem.config.cjs
     else
-        # Start directly with server.js
         print_step "Starting server.js with PM2..."
         pm2 start server.js --name "digitalbevy" -i 1 --env production
     fi
     
     pm2 save
+    
+    # Configure PM2 to start on system boot
+    print_step "Configuring PM2 startup on boot..."
+    pm2 startup -u $USER --hp $HOME 2>/dev/null || print_info "PM2 startup configuration skipped (may require sudo)"
     
     print_success "Application started with PM2"
     echo ""
@@ -412,6 +468,40 @@ start_application() {
     echo "  pm2 logs digitalbevy  - View logs"
     echo "  pm2 restart all       - Restart"
     echo "  pm2 stop all          - Stop"
+}
+
+# Verify deployment
+verify_deployment() {
+    print_header "Verifying Deployment"
+    
+    # Wait for application to start
+    print_step "Waiting for application to start..."
+    sleep 5
+    
+    # Check if PM2 process is running
+    if ! pm2 describe digitalbevy &>/dev/null; then
+        print_error "PM2 process 'digitalbevy' is not running!"
+        print_info "Check logs with: pm2 logs digitalbevy"
+        return 1
+    fi
+    
+    # Check if process is in error state
+    local pm2_status=$(pm2 jlist 2>/dev/null | grep -o '"status":"[^"]*"' | grep digitalbevy | cut -d'"' -f4)
+    if [ "$pm2_status" == "errored" ] || [ "$pm2_status" == "stopped" ]; then
+        print_error "Application failed to start (status: $pm2_status)"
+        print_info "Check logs with: pm2 logs digitalbevy"
+        return 1
+    fi
+    
+    # Check if port is listening
+    if ! lsof -Pi :$APP_PORT -sTCP:LISTEN -t >/dev/null 2>&1; then
+        print_error "Application not listening on port $APP_PORT"
+        print_info "Check logs with: pm2 logs digitalbevy"
+        return 1
+    fi
+    
+    print_success "Deployment verified successfully!"
+    return 0
 }
 
 # Print summary
@@ -425,13 +515,14 @@ print_summary() {
     echo "  • Port: $APP_PORT"
     echo "  • URL: $SITE_URL"
     echo ""
-    echo "Access your application at: $SITE_URL:$APP_PORT"
+    echo "Access your application at: $SITE_URL"
     echo ""
-    print_info "Default superadmin credentials (if seeded):"
-    echo "  Email: admin@digitalbevy.com"
-    echo "  Password: admin123"
+    print_info "Next Steps:"
+    echo "  1. Create your first superadmin user via the application"
+    echo "  2. Configure SMTP settings for email notifications (Settings page)"
+    echo "  3. Set up external service integrations (Mautic, DropCowboy, Vicidial)"
     echo ""
-    print_warning "IMPORTANT: Change the default password immediately!"
+    print_info "Logs: pm2 logs digitalbevy"
     echo ""
 }
 
@@ -471,11 +562,12 @@ quick_deploy() {
     load_node
     check_prerequisites
     switch_database
+    validate_db_connection  # Moved before install_dependencies to fail fast
     install_dependencies
-    validate_db_connection
     build_frontend
     setup_database
     start_application
+    verify_deployment  # Verify PM2 process started successfully
     
     echo ""
     print_success "Quick deployment complete!"
@@ -508,11 +600,12 @@ main() {
     collect_config
     create_env_file
     switch_database
+    validate_db_connection  # Moved before install_dependencies to fail fast
     install_dependencies
-    validate_db_connection
     build_frontend
     setup_database
     start_application
+    verify_deployment  # Verify PM2 process started successfully
     print_summary
 }
 
