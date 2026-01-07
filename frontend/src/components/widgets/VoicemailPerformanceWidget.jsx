@@ -128,12 +128,12 @@ const VoicemailPerformanceWidget = ({ clientName }) => {
   return (
     <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
       <div className="flex items-center justify-between mb-4">
-        <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+        <h3 className="text-lg font-semibold text-gray-600 flex items-center gap-2">
           <Phone className="text-green-600" size={20} />
           Voicemail Performance
         </h3>
         {clientName && (
-          <span className="text-sm text-gray-500">{clientName}</span>
+          <span className="font-bold bg-green-100 px-2 rounded text-gray-700">{clientName}</span>
         )}
       </div>
       
