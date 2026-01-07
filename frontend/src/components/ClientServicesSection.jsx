@@ -1,14 +1,16 @@
 import { useEffect } from "react";
 import { Mail, PhoneOff, ArrowLeft } from "lucide-react";
-import DropCowboyServiceStats from "./dropCowboy/DropCowboyServiceStats";
 import MauticServiceStats from "./mautic/MauticServiceStats";
 import EmailPerformanceWidget from "./widgets/EmailPerformanceWidget";
 import VoicemailPerformanceWidget from "./widgets/VoicemailPerformanceWidget";
 import useViewLevel from "../zustand/useViewLevel";
+import { useDashboardMetrics } from "../hooks/mautic";
 
 const ClientServicesSection = ({ selectedClient, goBackToClients, openMauticCampaigns, openDropcowboyCampaigns }) => {
 
     const { selectedService, setSelectedService } = useViewLevel();
+    // Fetch per-client dashboard metrics (kept as a top-level hook to preserve hook order)
+    const { metrics } = useDashboardMetrics(selectedClient?.mauticApiId || null);
     
     useEffect(() => {
         if (selectedService === null) {
@@ -73,7 +75,7 @@ const ClientServicesSection = ({ selectedClient, goBackToClients, openMauticCamp
 
             {/* metrics in service level view */}
             {selectedService === 'mautic' && <div className="my-2 flex flex-col w-full p-1 bg-blue-50 border border-gray-100 rounded-md">
-                {<MauticServiceStats selectedClient={selectedClient} />}
+                <MauticServiceStats selectedClient={selectedClient} metrics={metrics} />
             </div>}
 
             {/* Performance Widgets */}
