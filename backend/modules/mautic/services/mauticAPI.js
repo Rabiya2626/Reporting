@@ -1,4 +1,3 @@
-import logger from '../../../utils/logger.js';
 import axios from 'axios';
 import encryptionService from './encryption.js';
 import path from 'path';
@@ -80,7 +79,7 @@ class MauticAPIService {
         data: response.data
       };
     } catch (error) {
-      logger.error('Mautic connection test failed:', error.message);
+      console.error('Mautic connection test failed:', error.message);
       return {
         success: false,
         message: error.response?.data?.errors?.[0]?.message || error.message || 'Connection failed',
@@ -90,19 +89,107 @@ class MauticAPIService {
   }
 
   /**
-   * Fetch all email campaigns from Mautic
-   * @param {Object} client - Client configuration
-   * @returns {Promise<Array>} Array of email objects with stats
+   * Retry helper with exponential backoff
    */
-  async fetchEmails(client) {
+  async retryWithBackoff(fn, maxRetries = 3, initialDelay = 1000) {
+    for (let i = 0; i < maxRetries; i++) {
+      try {
+        return await fn();
+      } catch (error) {
+        const isRetryable = 
+          error.code === 'ETIMEDOUT' ||
+          error.code === 'ECONNRESET' ||
+          error.message.includes('socket hang up') ||
+          error.response?.status === 429 ||
+          error.response?.status === 502 ||
+          error.response?.status === 503;
+        
+        if (!isRetryable || i === maxRetries - 1) {
+          throw error;
+        }
+        
+        const delay = initialDelay * Math.pow(2, i);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+
+  /**
+   * Fetch individual email statistics (clicks, bounces, unsubscribes)
+   * @param {Object} client - Client configuration
+   * @param {number} emailId - Mautic email ID
+   * @returns {Promise<Object>} Email statistics
+   */
+  async fetchEmailStats(client, emailId) {
     try {
       const apiClient = this.createClient(client);
-      const emails = [];
+      const limit = 200000;
+
+      // Fetch with retry logic
+      const [emailStatsResp, pageHitsResp] = await this.retryWithBackoff(async () => {
+        return Promise.all([
+          apiClient.get('/stats/email_stats', {
+            params: {
+              start: 0,
+              limit: limit,
+              'where[0][col]': 'email_id',
+              'where[0][expr]': 'eq',
+              'where[0][val]': emailId
+            }
+          }),
+          apiClient.get('/stats/page_hits', {
+            params: {
+              start: 0,
+              limit: limit,
+              'where[0][col]': 'email_id',
+              'where[0][expr]': 'eq',
+              'where[0][val]': emailId
+            }
+          })
+        ]);
+      });
+
+      const emailStats = emailStatsResp.data.stats || [];
+      const clickStats = pageHitsResp.data.stats || [];
+
+      const totalSent = emailStats.length;
+      const totalOpened = emailStats.filter(s => s.is_read === 1 || s.is_read === true).length;
+      const totalBounced = emailStats.filter(s => s.is_failed === 1 || s.is_failed === true).length;
+      const totalUnsubscribed = emailStats.filter(s => s.is_unsubscribed === 1 || s.is_unsubscribed === true).length;
+      const totalClicks = clickStats.length;
+
+      return {
+        EmailID: emailId,
+        TotalSent: totalSent,
+        TotalOpened: totalOpened,
+        TotalBounced: totalBounced,
+        TotalUnsubscribed: totalUnsubscribed,
+        TotalClicks: totalClicks,
+        OpenRate: totalSent > 0 ? ((totalOpened / totalSent) * 100).toFixed(2) : '0.00',
+        ClickRate: totalSent > 0 ? ((totalClicks / totalSent) * 100).toFixed(2) : '0.00',
+        BounceRate: totalSent > 0 ? ((totalBounced / totalSent) * 100).toFixed(2) : '0.00'
+      };
+    } catch (error) {
+      // Silently skip failed emails - they'll be retried on next sync
+      return null;
+    }
+  }
+
+  /**
+   * Fetch all email campaigns from Mautic with enhanced stats
+   * @param {Object} client - Client configuration
+   * @param {boolean} fetchStats - Whether to fetch individual email stats (default: true)
+   * @returns {Promise<Array>} Array of email objects with stats
+   */
+  async fetchEmails(client, fetchStats = true) {
+    try {
+      const apiClient = this.createClient(client);
+      let emails = [];
       let start = 0;
       const limit = 1000000; // increase page size to request more items per page
       let hasMore = true;
 
-      logger.debug(` Fetching emails from ${client.name}...`);
+      console.log(` Fetching emails from ${client.name}...`);
 
       while (hasMore) {
         const response = await apiClient.get('/emails', {
@@ -122,7 +209,7 @@ class MauticAPIService {
           // Push emails directly - stats are already included in the list response
           emails.push(...emailArray);
 
-          logger.debug(`   Fetched ${emails.length} emails...`);
+          console.log(`   Fetched ${emails.length} emails...`);
 
           // If API provides a total, use it to determine whether more pages exist.
           const total = parseInt(data.total || 0, 10);
@@ -141,10 +228,87 @@ class MauticAPIService {
         }
       }
 
-      logger.debug(`✅ Total emails fetched: ${emails.length}`);
+      console.log(`✅ Total emails fetched: ${emails.length}`);
+
+      // Fetch individual stats for each email if requested
+      if (fetchStats && emails.length > 0) {
+        console.log(`\n📊 Fetching individual stats for ${emails.length} emails...`);
+        
+        // Check cache first
+        const { default: dataService } = await import('./dataService.js');
+        const cachedStats = await dataService.getCachedEmailStats(client.id, emails.map(e => e.id));
+        
+        const emailsToFetch = emails.filter(email => !cachedStats[email.id]);
+        console.log(`💾 Found ${Object.keys(cachedStats).length} cached, need to fetch ${emailsToFetch.length} emails`);
+
+        if (emailsToFetch.length === 0) {
+          console.log(`✅ All stats already cached!`);
+        } else {
+          // Fetch stats in smaller batches with delays to avoid rate limits
+          const BATCH_SIZE = 5; // Reduced from 10 to 5 for stability
+          const BATCH_DELAY = 2000; // 2 second delay between batches
+          const fetchedStats = {};
+          
+          for (let i = 0; i < emailsToFetch.length; i += BATCH_SIZE) {
+            const batch = emailsToFetch.slice(i, i + BATCH_SIZE);
+            const batchNum = Math.floor(i/BATCH_SIZE) + 1;
+            const totalBatches = Math.ceil(emailsToFetch.length/BATCH_SIZE);
+            console.log(`   Processing batch ${batchNum}/${totalBatches} (${i + batch.length}/${emailsToFetch.length})...`);
+            
+            const batchResults = await Promise.all(
+              batch.map(email => this.fetchEmailStats(client, email.id))
+            );
+            
+            batch.forEach((email, idx) => {
+              if (batchResults[idx]) {
+                fetchedStats[email.id] = batchResults[idx];
+              }
+            });
+            
+            // Save progress after each batch (prevents data loss on crash)
+            if (Object.keys(fetchedStats).length > 0) {
+              const saved = await dataService.cacheEmailStats(client.id, fetchedStats);
+              if (saved > 0) {
+                console.log(`      💾 Saved ${saved} stats to cache`);
+              }
+              // Clear fetchedStats to avoid re-saving
+              Object.keys(fetchedStats).forEach(key => delete fetchedStats[key]);
+            }
+            
+            // Delay between batches to avoid overwhelming API
+            if (i + BATCH_SIZE < emailsToFetch.length) {
+              await new Promise(resolve => setTimeout(resolve, BATCH_DELAY));
+            }
+          }
+          
+          console.log(`✅ Finished fetching email stats`);
+        }
+
+        // Reload ALL cached stats (including newly fetched ones)
+        const allCachedStats = await dataService.getCachedEmailStats(client.id, emails.map(e => e.id));
+        
+        // Merge all cached stats with email data
+        emails = emails.map(email => {
+          const stats = allCachedStats[email.id];
+          if (stats) {
+            return {
+              ...email,
+              sentCount: stats.TotalSent || email.sentCount || 0,
+              readCount: stats.TotalOpened || email.readCount || 0,
+              clickCount: stats.TotalClicks || email.clickCount || 0,
+              unsubscribeCount: stats.TotalUnsubscribed || email.unsubscribeCount || 0,
+              bounceCount: stats.TotalBounced || email.bounceCount || 0
+            };
+          }
+          return email;
+        });
+
+        console.log(`✅ Email stats integration complete`);
+      }
+
       return emails;
     } catch (error) {
-      logger.error('Error fetching emails:', error.message);
+      console.error('Error fetching emails:', error.message);
       throw new Error(`Failed to fetch emails: ${error.message}`);
     }
   }
@@ -162,7 +326,7 @@ class MauticAPIService {
       const limit = 100000; // increase page size
       let hasMore = true;
 
-      logger.debug(`🎯 Fetching campaigns from ${client.name}...`);
+      console.log(`🎯 Fetching campaigns from ${client.name}...`);
 
       while (hasMore) {
         const response = await apiClient.get('/campaigns', {
@@ -180,7 +344,7 @@ class MauticAPIService {
           const campaignArray = Object.values(data.campaigns);
           campaigns.push(...campaignArray);
 
-          logger.debug(`   Fetched ${campaigns.length} campaigns...`);
+          console.log(`   Fetched ${campaigns.length} campaigns...`);
 
           const total = parseInt(data.total || 0, 10);
           if (total && campaigns.length < total) {
@@ -197,11 +361,11 @@ class MauticAPIService {
         }
       }
 
-      logger.debug(`✅ Total campaigns fetched: ${campaigns.length}`);
-      logger.debug(`   Campaign IDs: ${campaigns.map(c => c.id).join(', ')}`);
+      console.log(`✅ Total campaigns fetched: ${campaigns.length}`);
+      console.log(`   Campaign IDs: ${campaigns.map(c => c.id).join(', ')}`);
       return campaigns;
     } catch (error) {
-      logger.error('Error fetching campaigns:', error.message);
+      console.error('Error fetching campaigns:', error.message);
       throw new Error(`Failed to fetch campaigns: ${error.message}`);
     }
   }
@@ -219,7 +383,7 @@ class MauticAPIService {
       const limit = 1000000; // increase page size
       let hasMore = true;
 
-      logger.debug(`📋 Fetching segments from ${client.name}...`);
+      console.log(`📋 Fetching segments from ${client.name}...`);
 
       while (hasMore) {
         const response = await apiClient.get('/segments', {
@@ -237,7 +401,7 @@ class MauticAPIService {
           const segmentArray = Object.values(data.lists);
           segments.push(...segmentArray);
 
-          logger.debug(`   Fetched ${segments.length} segments...`);
+          console.log(`   Fetched ${segments.length} segments...`);
 
           const total = parseInt(data.total || 0, 10);
           if (total && segments.length < total) {
@@ -292,7 +456,7 @@ class MauticAPIService {
       
       return segmentsWithCounts;
     } catch (error) {
-      logger.error('Error fetching segments:', error.message);
+      console.error('Error fetching segments:', error.message);
       throw new Error(`Failed to fetch segments: ${error.message}`);
     }
   }
@@ -327,7 +491,7 @@ class MauticAPIService {
         ? new Date(client.lastSyncAt).toISOString().split('T')[0]
         : null;
 
-      logger.debug(`📊 Fetching & saving report ID ${reportId} for ${client.name}${dateFrom ? ` (since ${dateFrom})` : ' (full sync)'}...`);
+      console.log(`📊 Fetching & saving report ID ${reportId} for ${client.name}${dateFrom ? ` (since ${dateFrom})` : ' (full sync)'}...`);
 
       // Fetch and save in batches (streaming approach)
       while (hasMore) {
@@ -348,14 +512,14 @@ class MauticAPIService {
         const data = response.data;
 
         if (!data || !data.data) {
-          logger.warn(`⚠️ No 'data' field found in report ${reportId} response.`);
+          console.warn(`⚠️ No 'data' field found in report ${reportId} response.`);
           break;
         }
 
         const batchRows = data.data;
         const totalAvailable = parseInt(data.totalResults || data.total || 0, 10);
         
-        logger.debug(`   Batch ${Math.floor(start / limit) + 1}: Fetched ${batchRows.length} rows (Total in Mautic: ${totalAvailable || 'unknown'}, Progress: ${totalRows + batchRows.length})...`);
+        console.log(`   Batch ${Math.floor(start / limit) + 1}: Fetched ${batchRows.length} rows (Total in Mautic: ${totalAvailable || 'unknown'}, Progress: ${totalRows + batchRows.length})...`);
 
         // Save batch immediately to database (don't accumulate in memory)
         if (batchRows.length > 0) {
@@ -364,30 +528,30 @@ class MauticAPIService {
           totalSkipped += saveResult.skipped;
           totalRows += batchRows.length;
 
-          logger.debug(`   Saved: ${saveResult.created} new, ${saveResult.skipped} duplicates (Total so far: ${totalCreated} created, ${totalSkipped} skipped)`);
+          console.log(`   Saved: ${saveResult.created} new, ${saveResult.skipped} duplicates (Total so far: ${totalCreated} created, ${totalSkipped} skipped)`);
         }
 
         // Determine if we should continue fetching
         // Stop if: no data returned OR we've reached the total available
         if (batchRows.length === 0) {
-          logger.debug(`✅ Stopping: No more data returned by API`);
+          console.log(`✅ Stopping: No more data returned by API`);
           hasMore = false;
         } else if (totalAvailable > 0 && totalRows >= totalAvailable) {
-          logger.debug(`✅ Stopping: Reached Mautic's total (${totalRows}/${totalAvailable})`);
+          console.log(`✅ Stopping: Reached Mautic's total (${totalRows}/${totalAvailable})`);
           hasMore = false;
         } else if (batchRows.length < limit && (!totalAvailable || totalRows >= totalAvailable)) {
           // Only stop on partial batch if we don't know total OR we've reached it
-          logger.debug(`✅ Stopping: Partial batch received (${batchRows.length} < ${limit}) and ${totalAvailable ? 'total reached' : 'no total available'}`);
+          console.log(`✅ Stopping: Partial batch received (${batchRows.length} < ${limit}) and ${totalAvailable ? 'total reached' : 'no total available'}`);
           hasMore = false;
         } else {
           // Continue to next batch
-          logger.debug(`   ➡️  Continuing to next batch (fetched: ${totalRows}, available: ${totalAvailable || 'unknown'})...`);
+          console.log(`   ➡️  Continuing to next batch (fetched: ${totalRows}, available: ${totalAvailable || 'unknown'})...`);
           start += batchRows.length; // Use actual rows fetched, not limit
           hasMore = true;
         }
       }
 
-      logger.debug(`✅ Report complete: ${totalRows} rows fetched, ${totalCreated} saved to DB, ${totalSkipped} skipped`);
+      console.log(`✅ Report complete: ${totalRows} rows fetched, ${totalCreated} saved to DB, ${totalSkipped} skipped`);
 
       return {
         success: true,
@@ -397,7 +561,7 @@ class MauticAPIService {
       };
 
     } catch (error) {
-      logger.error(`❌ Error fetching report for client ${client.name}:`, error.message);
+      console.error(`❌ Error fetching report for client ${client.name}:`, error.message);
       throw new Error(`Failed to fetch report for client ${client.name}: ${error.message}`);
     }
   }
@@ -464,7 +628,7 @@ class MauticAPIService {
           if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
           fs.writeFileSync(path.join(dir, `page_${page}.json`), JSON.stringify(payload, null, 2));
         } catch (e) {
-          logger.warn('Failed to write temp page file:', e.message);
+          console.warn('Failed to write temp page file:', e.message);
         }
       };
 
@@ -479,25 +643,25 @@ class MauticAPIService {
         } catch (err) {
           if (attempt >= RETRIES) throw err;
           const delay = (attempt + 1) * 2000;
-          logger.warn(`Retry page ${page} in ${delay / 1000}s`);
+          console.warn(`Retry page ${page} in ${delay / 1000}s`);
           await sleep(delay);
           return fetchPage(page, attempt + 1);
         }
       }
 
-      logger.debug(`📅 Fetching historical reports (page-mode) ${fromDate} → ${toDate} for ${client.name} (pageLimit=${PAGE_LIMIT}, concurrency=${CONCURRENCY})`);
+      console.log(`📅 Fetching historical reports (page-mode) ${fromDate} → ${toDate} for ${client.name} (pageLimit=${PAGE_LIMIT}, concurrency=${CONCURRENCY})`);
 
       // fetch first page to know totals
       const first = await fetchPage(1);
       if (!first || !Array.isArray(first.data)) {
-        logger.warn('⚠️ First page returned no data, aborting historical month fetch');
+        console.warn('⚠️ First page returned no data, aborting historical month fetch');
         return { success: true, created: 0, skipped: 0, totalRows: 0, dateRange: { from: fromDate, to: toDate } };
       }
 
       const total = parseInt(first.totalResults || first.total || first.data.length || 0, 10) || first.data.length;
       const totalPages = Math.max(1, Math.ceil(total / PAGE_LIMIT));
 
-      logger.debug(`   Month ${monthKey}: total records in Mautic: ${total} → pages: ${totalPages}`);
+      console.log(`   Month ${monthKey}: total records in Mautic: ${total} → pages: ${totalPages}`);
 
       // save first page and persist immediately
       savePage(1, first);
@@ -521,7 +685,7 @@ class MauticAPIService {
               const r = await dataService.saveEmailReports(client.id, payload.data);
               return r;
             } catch (e) {
-              logger.error(`Error saving page ${p} for ${monthKey}:`, e.message);
+              console.error(`Error saving page ${p} for ${monthKey}:`, e.message);
               // try once per-row fallback inside dataService.saveEmailReports already handles failures
               return { created: 0, skipped: 0 };
             }
@@ -562,14 +726,14 @@ class MauticAPIService {
           });
         } catch (uErr) {
           // updateMany shouldn't typically fail; log for diagnostics
-          logger.warn('Failed to update fetched-month from/to (non-fatal):', uErr.message || uErr);
+          console.warn('Failed to update fetched-month from/to (non-fatal):', uErr.message || uErr);
         }
       } catch (e) {
         // Non-fatal: we don't want the entire backfill to fail because of marker writes
-        logger.warn('Failed to mark fetched month (non-fatal):', e.message || e);
+        console.warn('Failed to mark fetched month (non-fatal):', e.message || e);
       }
 
-      logger.debug(`✅ Historical month ${monthKey} complete: ${totalCreated} created, ${totalSkipped} skipped`);
+      console.log(`✅ Historical month ${monthKey} complete: ${totalCreated} created, ${totalSkipped} skipped`);
 
       return {
         success: true,
@@ -579,7 +743,7 @@ class MauticAPIService {
         dateRange: { from: fromDate, to: toDate }
       };
     } catch (error) {
-      logger.error(`❌ Error fetching historical reports:`, error.message);
+      console.error(`❌ Error fetching historical reports:`, error.message);
       throw new Error(`Failed to fetch historical reports: ${error.message}`);
     }
   }
@@ -588,53 +752,22 @@ class MauticAPIService {
    * Sync all data for a client (emails, campaigns, segments, reports)
    * Email reports are saved to database during fetch (streaming)
    * @param {Object} client - Client configuration
-   * @param {Function} onProgress - Optional progress callback
    * @returns {Promise<Object>} Sync results
    */
-  async syncAllData(client, onProgress = null) {
+  async syncAllData(client) {
     try {
-      logger.debug(`🔄 Starting full sync for ${client.name}...`);
+      console.log(`🔄 Starting full sync for ${client.name}...`);
 
-      // Report progress: fetching metadata
-      if (onProgress) {
-        onProgress({
-          phase: 'metadata',
-          message: 'Fetching emails, campaigns, and segments...',
-          recordsProcessed: 0,
-          totalRecords: 0
-        });
-      }
-
-      // Fetch emails, campaigns, and segments in parallel (fast metadata)
+      // Fetch emails WITH STATS, campaigns, and segments in parallel
       const [emails, campaigns, segments] = await Promise.all([
-        this.fetchEmails(client),
+        this.fetchEmails(client, true), // TRUE = fetch individual stats
         this.fetchCampaigns(client),
         this.fetchSegments(client)
       ]);
 
-      // Report progress: metadata complete
-      if (onProgress) {
-        onProgress({
-          phase: 'reports',
-          message: `Metadata complete. Fetching email reports...`,
-          recordsProcessed: emails.length + campaigns.length + segments.length,
-          totalRecords: 0
-        });
-      }
-
       // Fetch report data AFTER metadata succeeds (prevents background execution on error)
       // This is a long-running operation that saves directly to DB
       const emailReportResult = await this.fetchReport(client);
-
-      // Report progress: complete
-      if (onProgress) {
-        onProgress({
-          phase: 'complete',
-          message: 'Sync complete',
-          recordsProcessed: emailReportResult.created,
-          totalRecords: emailReportResult.totalRows
-        });
-      }
 
       return {
         success: true,
@@ -650,7 +783,7 @@ class MauticAPIService {
         }
       };
     } catch (error) {
-      logger.error('Error syncing data:', error.message);
+      console.error('Error syncing data:', error.message);
       return {
         success: false,
         error: error.message

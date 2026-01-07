@@ -4,6 +4,76 @@ import { Prisma } from '@prisma/client';
 
 class MauticDataService {
   /**
+ * Get cached email stats for multiple emails
+ * @param {number} clientId - Client ID
+ * @param {Array<number>} emailIds - Array of Mautic email IDs
+ * @returns {Promise<Object>} Object mapping emailId to stats
+ */
+  async getCachedEmailStats(clientId, emailIds) {
+    try {
+      const cached = await prisma.mauticEmailStatsCache.findMany({
+        where: {
+          clientId: clientId,
+          mauticEmailId: { in: emailIds }
+        }
+      });
+
+      const result = {};
+      cached.forEach(stat => {
+        result[stat.mauticEmailId] = {
+          EmailID: stat.mauticEmailId,
+          TotalSent: stat.totalSent,
+          TotalOpened: stat.totalOpened,
+          TotalBounced: stat.totalBounced,
+          TotalUnsubscribed: stat.totalUnsubscribed,
+          TotalClicks: stat.totalClicks,
+          OpenRate: parseFloat(stat.openRate).toFixed(2),
+          ClickRate: parseFloat(stat.clickRate).toFixed(2),
+          BounceRate: parseFloat(stat.bounceRate).toFixed(2)
+        };
+      });
+
+      return result;
+    } catch (error) {
+      console.error('Error getting cached email stats:', error);
+      return {};
+    }
+  }
+
+  /**
+   * Cache email stats for multiple emails
+   * @param {number} clientId - Client ID
+   * @param {Object} statsData - Object mapping emailId to stats object
+   * @returns {Promise<number>} Number of cached records
+   */
+  async cacheEmailStats(clientId, statsData) {
+    try {
+      const records = Object.entries(statsData).map(([emailId, stats]) => ({
+        clientId: clientId,
+        mauticEmailId: parseInt(emailId),
+        totalSent: stats.TotalSent || 0,
+        totalOpened: stats.TotalOpened || 0,
+        totalBounced: stats.TotalBounced || 0,
+        totalUnsubscribed: stats.TotalUnsubscribed || 0,
+        totalClicks: stats.TotalClicks || 0,
+        openRate: new Prisma.Decimal(stats.OpenRate || 0),
+        clickRate: new Prisma.Decimal(stats.ClickRate || 0),
+        bounceRate: new Prisma.Decimal(stats.BounceRate || 0),
+        cachedAt: new Date()
+      }));
+
+      const result = await prisma.mauticEmailStatsCache.createMany({
+        data: records,
+        skipDuplicates: true
+      });
+
+      return result.count;
+    } catch (error) {
+      console.error('Error caching email stats:', error);
+      return 0;
+    }
+  }
+  /**
    * Save emails to database using BULK INSERT (1000x faster!)
    * @param {number} clientId - Client ID
    * @param {Array} emails - Array of email objects from Mautic API
@@ -258,7 +328,7 @@ class MauticDataService {
 
         // Prepare valid records for batch insert
         const validRecords = [];
-        
+
         for (const row of batch) {
           // Skip invalid rows
           if (!row.e_id || !row.date_sent || !row.email_address || !row.subject1) {

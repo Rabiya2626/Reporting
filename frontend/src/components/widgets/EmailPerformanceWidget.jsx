@@ -12,6 +12,12 @@ const formatNumber = (num) => {
   return num.toLocaleString()
 }
 
+const formatPercentOne = (v) => {
+  const n = parseFloat(v)
+  if (Number.isNaN(n)) return '0.0'
+  return n.toFixed(1)
+}
+
 const MetricBox = ({ label, value, icon: Icon, color = 'gray' }) => {
   const colorClasses = {
     gray: 'bg-gray-100 text-gray-600',
@@ -37,7 +43,7 @@ const RateBox = ({ label, value, isNegative = false }) => (
   <div className="text-center p-2 bg-gray-50 rounded-lg">
     <div className="text-xs text-gray-500 mb-1">{label}</div>
     <div className={`text-lg font-bold ${isNegative ? 'text-red-600' : 'text-blue-600'}`}>
-      {typeof value === 'number' ? (Math.floor(value * 10) / 10).toFixed(1) : '0'}%
+      {formatPercentOne(value)}%
     </div>
   </div>
 )
@@ -83,9 +89,9 @@ const EmailPerformanceWidget = ({ clientId, clientName }) => {
       clicked: email.stats?.clicked || 0,
       bounced: email.stats?.bounced || 0,
       unsubscribed: email.stats?.unsubscribed || 0,
-      openRate: typeof email.stats?.openRate === 'number' ? (Math.floor(email.stats.openRate * 10) / 10).toFixed(1) : '0',
-      clickRate: typeof email.stats?.clickRate === 'number' ? (Math.floor(email.stats.clickRate * 10) / 10).toFixed(1) : '0',
-      unsubRate: typeof email.stats?.unsubscribeRate === 'number' ? (Math.floor(email.stats.unsubscribeRate * 10) / 10).toFixed(1) : '0'
+      openRate: formatPercentOne(email.stats?.openRate),
+      clickRate: formatPercentOne(email.stats?.clickRate),
+      unsubRate: formatPercentOne(email.stats?.unsubscribeRate)
     }))
   }, [stats])
 
