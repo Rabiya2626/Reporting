@@ -22,6 +22,7 @@ CREATE TABLE `User` (
     `id` INTEGER NOT NULL AUTO_INCREMENT,
     `name` VARCHAR(191) NOT NULL,
     `email` VARCHAR(191) NOT NULL,
+    `phone` VARCHAR(50) NULL,
     `password` VARCHAR(191) NOT NULL,
     `role` ENUM('superadmin', 'admin', 'manager', 'employee', 'telecaller') NOT NULL DEFAULT 'employee',
     `customRoleId` INTEGER NULL,

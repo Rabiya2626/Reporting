@@ -189,7 +189,7 @@ router.post('/sftp-credentials', async (req, res) => {
         username,
         password,
         remotePath,
-        createdById: req.user?.id || null
+        ...(req.user?.id ? { createdBy: { connect: { id: req.user.id } } } : {})
       }
     });
     res.json({ success: true, data: { id: cred.id } });
@@ -305,7 +305,7 @@ router.post('/smtp-credentials', async (req, res) => {
         username,
         password,
         fromAddress,
-        createdById: req.user?.id || null
+        ...(req.user?.id ? { createdBy: { connect: { id: req.user.id } } } : {})
       }
     });
     res.json({ success: true, data: { id: cred.id } });
@@ -425,7 +425,7 @@ router.post('/vicidial-credentials', async (req, res) => {
         url,
         username,
         password,
-        createdById: req.user?.id || null
+        ...(req.user?.id ? { createdBy: { connect: { id: req.user.id } } } : {})
       }
     });
     res.json({ success: true, data: { id: cred.id } });
@@ -658,11 +658,11 @@ router.post('/users', async (req, res) => {
         email,
         password: hashedPassword,
         role,
-        createdById: req.user.id,
+        createdBy: { connect: { id: req.user.id } },
         isActive: true,
         // Connect to custom role if validated
         ...(validatedCustomRoleId ? {
-          customRoleId: validatedCustomRoleId
+          customRole: { connect: { id: validatedCustomRoleId } }
         } : {}),
         // Connect to manager if provided (for employees)
         ...(managerId && role === 'employee' ? {
@@ -1028,7 +1028,7 @@ router.post('/clients', async (req, res) => {
           description,
           clientType: 'general',
           isActive: true,
-          createdById: req.user.id
+          createdBy: { connect: { id: req.user.id } }
         }
       });
 
@@ -1040,9 +1040,9 @@ router.post('/clients', async (req, res) => {
         assignmentPromises.push(
           tx.clientAssignment.create({
             data: {
-              clientId: client.id,
-              userId: parseInt(managerId),
-              assignedById: req.user.id
+              client: { connect: { id: client.id } },
+              user: { connect: { id: parseInt(managerId) } },
+              assignedBy: { connect: { id: req.user.id } }
             }
           })
         );
@@ -1053,9 +1053,9 @@ router.post('/clients', async (req, res) => {
         assignmentPromises.push(
           tx.clientAssignment.create({
             data: {
-              clientId: client.id,
-              userId: parseInt(employeeId),
-              assignedById: req.user.id
+              client: { connect: { id: client.id } },
+              user: { connect: { id: parseInt(employeeId) } },
+              assignedBy: { connect: { id: req.user.id } }
             }
           })
         );
@@ -1696,7 +1696,7 @@ router.put('/site-config', async (req, res) => {
         loginBgColor,
         loginBgGradientFrom,
         loginBgGradientTo,
-        createdById: req.user?.id || null
+        ...(req.user?.id ? { createdBy: { connect: { id: req.user.id } } } : {})
       }
     });
     logger.debug('[site-config] created:', created);
@@ -1798,7 +1798,7 @@ router.post('/site-customization', upload.fields([
           loginBgColor,
           loginBgGradientFrom,
           loginBgGradientTo,
-          createdById: req.user?.id || null
+          ...(req.user?.id ? { createdBy: { connect: { id: req.user.id } } } : {})
         }
       });
       res.json({ success: true, data: created });
