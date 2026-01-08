@@ -118,6 +118,7 @@ model User {
   id           Int      @id @default(autoincrement())
   name         String
   email        String   @unique
+  phone        String?  @db.VarChar(50)
   password     String
   role         UserRole @default(employee)
   customRoleId Int?

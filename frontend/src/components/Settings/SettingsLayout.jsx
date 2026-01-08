@@ -26,7 +26,7 @@ const SECTION_CONFIG = [
 
 const SettingsLayout = ({ children, myPermissions = [] }) => {
   const { user } = useAuth();
-  const [activeSection, setActiveSection] = useState('mautic');
+  const [activeSection, setActiveSection] = useState('roles');
   const isInteractingRef = useRef(false);
   const contentRef = useRef(null);
   const sectionRefs = useRef({});
