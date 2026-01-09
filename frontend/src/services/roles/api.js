@@ -31,4 +31,9 @@ export const deleteRole = (id) => rolesAPI.delete(`/${id}`);
 
 export const toggleRole = (id) => rolesAPI.patch(`/${id}/toggle`);
 
+export const deleteRoleWithReassignment = (id, reassignToRoleId) => 
+  rolesAPI.delete(`/${id}`, {
+    data: { reassignToRoleId }
+  });
+
 export default rolesAPI;

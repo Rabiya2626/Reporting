@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
 import Permissions from "./Permissions";
 import SettingsSection from "./SettingsSection";
+import RoleReassignmentModal from "./RoleReassignmentModal";
 import { useSettings } from "./SettingsLayout";
 import { Save, X, Plus, Edit, Trash2, Users, Shield, ChevronLeft } from "lucide-react";
-import { fetchRoles, createRole, updateRole, deleteRole } from "../../services/roles/api";
+import { fetchRoles, createRole, updateRole, deleteRole, deleteRoleWithReassignment } from "../../services/roles/api";
 
 const RolesAndPermissions = () => {
   const { canAccessSetting } = useSettings();
@@ -21,6 +22,9 @@ const RolesAndPermissions = () => {
     isTeamManager: false,
   });
   const [permissions, setPermissions] = useState({});
+  const [showReassignmentModal, setShowReassignmentModal] = useState(false);
+  const [roleToDelete, setRoleToDelete] = useState(null);
+  const [reassignmentLoading, setReassignmentLoading] = useState(false);
 
   useEffect(() => {
     loadRoles();
@@ -109,18 +113,54 @@ const RolesAndPermissions = () => {
       return;
     }
 
-    if (!window.confirm(`Are you sure you want to delete the role "${role.name}"?`)) {
-      return;
+    // Check if there are users with this role
+    const usersCount = role._count?.users || 0;
+    
+    if (usersCount > 0) {
+      // Show reassignment modal
+      setRoleToDelete(role);
+      setShowReassignmentModal(true);
+    } else {
+      // No users, proceed with normal deletion
+      if (!window.confirm(`Are you sure you want to delete the role "${role.name}"?`)) {
+        return;
+      }
+      await performDelete(role.id);
     }
+  };
 
+  const performDelete = async (roleId) => {
     try {
-      await deleteRole(role.id);
+      await deleteRole(roleId);
       alert("Role deleted successfully!");
       await loadRoles();
     } catch (err) {
       console.error("Error deleting role:", err);
       alert(err.response?.data?.message || "Failed to delete role");
     }
+  };
+
+  const handleReassignmentConfirm = async (newRoleId) => {
+    if (!roleToDelete) return;
+
+    try {
+      setReassignmentLoading(true);
+      await deleteRoleWithReassignment(roleToDelete.id, newRoleId);
+      alert("Role deleted and users reassigned successfully!");
+      setShowReassignmentModal(false);
+      setRoleToDelete(null);
+      await loadRoles();
+    } catch (err) {
+      console.error("Error deleting role with reassignment:", err);
+      alert(err.response?.data?.message || "Failed to delete role and reassign users");
+    } finally {
+      setReassignmentLoading(false);
+    }
+  };
+
+  const handleReassignmentCancel = () => {
+    setShowReassignmentModal(false);
+    setRoleToDelete(null);
   };
 
   const handleCancel = () => {
@@ -146,6 +186,15 @@ const RolesAndPermissions = () => {
   if (view === "list") {
     return (
       <SettingsSection id="roles">
+        <RoleReassignmentModal
+          isOpen={showReassignmentModal}
+          role={roleToDelete}
+          affectedUsersCount={roleToDelete?._count?.users || 0}
+          availableRoles={roles}
+          onConfirm={handleReassignmentConfirm}
+          onCancel={handleReassignmentCancel}
+          isLoading={reassignmentLoading}
+        />
         <div className="card">
         <div className="flex items-center justify-between mb-6">
           <div>
