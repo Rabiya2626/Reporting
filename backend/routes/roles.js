@@ -228,6 +228,7 @@ router.put('/:id', authenticate, requireAdmin, async (req, res) => {
 router.delete('/:id', authenticate, requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
+    const { reassignToRoleId } = req.body || {};
     const roleId = parseInt(id);
 
     const existing = await prisma.role.findUnique({
@@ -253,13 +254,39 @@ router.delete('/:id', authenticate, requireAdmin, async (req, res) => {
       });
     }
 
+    // If there are users assigned to this role
     if (existing._count.users > 0) {
-      return res.status(400).json({
-        success: false,
-        message: `Cannot delete role. ${existing._count.users} user(s) are assigned to this role.`
-      });
+      // If reassignToRoleId is provided, reassign users
+      if (reassignToRoleId) {
+        // Verify the target role exists
+        const targetRole = await prisma.role.findUnique({
+          where: { id: reassignToRoleId }
+        });
+
+        if (!targetRole) {
+          return res.status(404).json({
+            success: false,
+            message: 'Target role not found'
+          });
+        }
+
+        // Reassign all users from the role being deleted to the target role
+        await prisma.user.updateMany({
+          where: { customRoleId: roleId },
+          data: { customRoleId: reassignToRoleId }
+        });
+
+        logger.debug(`Reassigned ${existing._count.users} user(s) from role ${existing.name} to role ${targetRole.name}`);
+      } else {
+        // No target role specified but users exist
+        return res.status(400).json({
+          success: false,
+          message: `Cannot delete role. ${existing._count.users} user(s) are assigned to this role. Please provide a target role for reassignment.`
+        });
+      }
     }
 
+    // Delete the role
     await prisma.role.delete({
       where: { id: roleId }
     });
