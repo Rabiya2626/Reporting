@@ -667,7 +667,32 @@ router.delete('/:id', authenticate, canManageUser, ensureOwnerGuard({ isDelete: 
       });
 
       logger.info(`Step 3: Disconnecting manager-employee relationships for user ${userId}`);
-      await tx.$executeRawUnsafe(`DELETE FROM repdtb._ManagerEmployee WHERE A = ${userId} OR B = ${userId}`);
+
+      // Remove this user from other users' `managers` lists (they were managed by this user)
+      const managedUsers = await tx.user.findMany({
+        where: { managers: { some: { id: userId } } },
+        select: { id: true }
+      });
+
+      for (const u of managedUsers) {
+        await tx.user.update({
+          where: { id: u.id },
+          data: { managers: { disconnect: { id: userId } } }
+        });
+      }
+
+      // Remove this user from other users' `employees` lists (they were managers of this user)
+      const managerUsers = await tx.user.findMany({
+        where: { employees: { some: { id: userId } } },
+        select: { id: true }
+      });
+
+      for (const u of managerUsers) {
+        await tx.user.update({
+          where: { id: u.id },
+          data: { employees: { disconnect: { id: userId } } }
+        });
+      }
 
       logger.info(`Step 4: Nullifying createdBy references for users created by ${userId}`);
       await tx.user.updateMany({
