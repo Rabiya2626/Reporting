@@ -1,60 +1,15 @@
-import { Mail, List, Send, Users } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { Users, Mail, List, Send } from 'lucide-react';
 import { formatNumber } from '../../utils/mautic';
-import mauticService from '../../services/mautic/mauticService';
 
 
-const MauticServiceStats = ({ selectedClient, metrics }) => {
-    // Prefer metrics.overview.totalContacts (parent-provided), then explicit fields on selectedClient,
-    // then fallback to fetching. Keep state so UI updates when metrics arrive.
-    const initialContacts = metrics?.overview?.totalContacts ?? (
-        typeof selectedClient?.totalContacts === 'number'
-            ? selectedClient.totalContacts
-            : (typeof selectedClient?.segmentContactCount === 'number' ? selectedClient.segmentContactCount : null)
-    );
-
-    const [contactsCount, setContactsCount] = useState(initialContacts);
-
-    useEffect(() => {
-        let mounted = true;
-
-        // If parent-provided metrics has the value, use it immediately
-        if (metrics?.overview && typeof metrics.overview.totalContacts === 'number') {
-            setContactsCount(metrics.overview.totalContacts);
-            return () => { mounted = false };
-        }
-
-        // If selectedClient includes explicit counts, prefer those
-        if (typeof selectedClient?.totalContacts === 'number') {
-            setContactsCount(selectedClient.totalContacts);
-            return () => { mounted = false };
-        }
-        if (typeof selectedClient?.segmentContactCount === 'number') {
-            setContactsCount(selectedClient.segmentContactCount);
-            return () => { mounted = false };
-        }
-
-        // Otherwise fetch dashboard metrics for this single client to get totalContacts (same source as MetricsCards)
-        const fetchMetrics = async () => {
-            const clientId = selectedClient?.mauticApiId || selectedClient?.id || selectedClient?.clientId;
-            if (!clientId) return;
-            try {
-                const res = await mauticService.getDashboardMetrics(clientId);
-                if (mounted && res.success && res.data?.overview) {
-                    setContactsCount(res.data.overview.totalContacts || 0);
-                }
-            } catch (err) {
-                console.error('Failed to fetch client dashboard metrics for contacts:', err);
-                if (mounted) setContactsCount(0);
-            }
-        };
-
-        fetchMetrics();
-
-        return () => { mounted = false };
-    }, [selectedClient, metrics]);
-
+const MauticServiceStats = ({ selectedClient }) => {
     const cards = [
+        {
+            title: 'Total Contacts',
+            value: formatNumber(selectedClient.totalContacts || 0),
+            icon: Users,
+            color: 'bg-blue-500',
+        },
         {
             title: 'Total Emails',
             value: formatNumber(selectedClient.totalEmails),
@@ -72,12 +27,6 @@ const MauticServiceStats = ({ selectedClient, metrics }) => {
             value: formatNumber(selectedClient.totalSegments),
             icon: List,
             color: 'bg-green-500',
-        }
-        ,{
-            title: 'Total Contacts',
-            value: formatNumber(contactsCount || 0),
-            icon: Users,
-            color: 'bg-teal-500',
         }
     ];
 

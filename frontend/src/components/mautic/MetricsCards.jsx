@@ -12,6 +12,13 @@ export default function MetricsCards({ metrics }) {
 
   const cards = [
     {
+      title: 'Total Contacts',
+      value: formatNumber(overview.totalContacts || 0),
+      icon: Users,
+      color: 'bg-blue-500',
+      subtitle: `Across ${overview.clients || 0} client${(overview.clients || 0) !== 1 ? 's' : ''}`
+    },
+    {
       title: 'Total Emails',
       value: formatNumber(overview.totalEmails),
       icon: Mail,
@@ -32,13 +39,6 @@ export default function MetricsCards({ metrics }) {
       color: 'bg-green-500',
       subtitle: `Across ${overview.clients} client${overview.clients !== 1 ? 's' : ''}`
     }
-    ,{
-      title: 'Total Contacts',
-      value: formatNumber(overview.totalContacts || 0),
-      icon: Users,
-      color: 'bg-teal-500',
-      subtitle: `${formatNumber(overview.totalContacts || 0)} contacts across segments`
-    }
   ];
 
   return (
@@ -48,7 +48,7 @@ export default function MetricsCards({ metrics }) {
         return (
           <div
             key={index}
-            className="bg-white rounded-lg shadow-sm border border-gray-200 p-3 hover:shadow-md transition-shadow"
+            className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 hover:shadow-md transition-shadow"
           >
             <div className="flex items-start justify-between">
               <div className="flex-1">
@@ -63,7 +63,7 @@ export default function MetricsCards({ metrics }) {
                 </p>
               </div>
               <div className={`${card.color} p-3 rounded-lg`}>
-                <Icon className="text-white" size={20} />
+                <Icon className="text-white" size={24} />
               </div>
             </div>
           </div>
