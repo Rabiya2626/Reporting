@@ -1,14 +1,13 @@
-import logger from '../../../utils/logger.js';
 import prisma from '../../../prisma/client.js';
 import { Prisma } from '@prisma/client';
 
 class MauticDataService {
   /**
- * Get cached email stats for multiple emails
- * @param {number} clientId - Client ID
- * @param {Array<number>} emailIds - Array of Mautic email IDs
- * @returns {Promise<Object>} Object mapping emailId to stats
- */
+   * Get cached email stats for multiple emails
+   * @param {number} clientId - Client ID
+   * @param {Array<number>} emailIds - Array of Mautic email IDs
+   * @returns {Promise<Object>} Object mapping emailId to stats
+   */
   async getCachedEmailStats(clientId, emailIds) {
     try {
       const cached = await prisma.mauticEmailStatsCache.findMany({
@@ -73,6 +72,7 @@ class MauticDataService {
       return 0;
     }
   }
+
   /**
    * Save emails to database using BULK INSERT (1000x faster!)
    * @param {number} clientId - Client ID
@@ -84,15 +84,15 @@ class MauticDataService {
       console.log(`💾 BULK SAVING ${emails.length} emails for client ${clientId}...`);
 
       if (emails.length === 0) {
-        logger.debug(`✅ No emails to save`);
+        console.log(`✅ No emails to save`);
         return { success: true, created: 0, updated: 0, total: 0 };
       }
 
       let totalCreated = 0;
-      const BATCH_SIZE = 1000; // MUCH larger batches for createMany
+      const BATCH_SIZE = 5000; // ⚡ ULTRA MASSIVE batches for 1000x speed!
       const now = new Date();
 
-      // Process in HUGE batches using createMany with skipDuplicates
+      // Process in ULTRA HUGE batches using createMany with skipDuplicates
       for (let i = 0; i < emails.length; i += BATCH_SIZE) {
         const batch = emails.slice(i, i + BATCH_SIZE);
 
@@ -150,7 +150,7 @@ class MauticDataService {
         total: emails.length
       };
     } catch (error) {
-      logger.error('Error saving emails:', error);
+      console.error('Error saving emails:', error);
       throw new Error(`Failed to save emails: ${error.message}`);
     }
   }
@@ -167,15 +167,15 @@ class MauticDataService {
       console.log(`   Campaign IDs: ${campaigns.map(c => c.id).join(', ')}`);
 
       if (campaigns.length === 0) {
-        logger.debug(`✅ No campaigns to save`);
+        console.log(`✅ No campaigns to save`);
         return { success: true, created: 0, updated: 0, total: 0 };
       }
 
       let totalCreated = 0;
-      const BATCH_SIZE = 1000; // MUCH larger batches for createMany
+      const BATCH_SIZE = 5000; // ⚡ ULTRA MASSIVE batches for 1000x speed!
       const now = new Date();
 
-      // Process in HUGE batches using createMany with skipDuplicates
+      // Process in ULTRA HUGE batches using createMany with skipDuplicates
       for (let i = 0; i < campaigns.length; i += BATCH_SIZE) {
         const batch = campaigns.slice(i, i + BATCH_SIZE);
 
@@ -232,7 +232,7 @@ class MauticDataService {
         total: campaigns.length
       };
     } catch (error) {
-      logger.error('Error saving campaigns:', error);
+      console.error('Error saving campaigns:', error);
       throw new Error(`Failed to save campaigns: ${error.message}`);
     }
   }
@@ -248,15 +248,15 @@ class MauticDataService {
       console.log(`💾 BULK SAVING ${segments.length} segments for client ${clientId}...`);
 
       if (segments.length === 0) {
-        logger.debug(`✅ No segments to save`);
+        console.log(`✅ No segments to save`);
         return { success: true, created: 0, updated: 0, total: 0 };
       }
 
       let totalCreated = 0;
-      const BATCH_SIZE = 1000; // MUCH larger batches for createMany
+      const BATCH_SIZE = 5000; // ⚡ ULTRA MASSIVE batches for 1000x speed!
       const now = new Date();
 
-      // Process in HUGE batches using createMany with skipDuplicates
+      // Process in ULTRA HUGE batches using createMany with skipDuplicates
       for (let i = 0; i < segments.length; i += BATCH_SIZE) {
         const batch = segments.slice(i, i + BATCH_SIZE);
 
@@ -298,7 +298,7 @@ class MauticDataService {
         total: segments.length
       };
     } catch (error) {
-      logger.error('Error saving segments:', error);
+      console.error('Error saving segments:', error);
       throw new Error(`Failed to save segments: ${error.message}`);
     }
   }
@@ -311,16 +311,16 @@ class MauticDataService {
    */
   async saveEmailReports(clientId, reportRows) {
     try {
-      logger.debug(`📊 Saving ${reportRows.length} email report records for client ${clientId}...`);
+      console.log(`📊 Saving ${reportRows.length} email report records for client ${clientId}...`);
 
       if (reportRows.length === 0) {
-        logger.debug(`✅ No email reports to save`);
+        console.log(`✅ No email reports to save`);
         return { success: true, created: 0, updated: 0, total: 0 };
       }
 
       let created = 0;
       let skipped = 0;
-      const BATCH_SIZE = 100;
+      const BATCH_SIZE = 10000; // ⚡ ULTRA MASSIVE batches - 100x bigger!
 
       // Process in batches for better performance
       for (let i = 0; i < reportRows.length; i += BATCH_SIZE) {
@@ -328,7 +328,7 @@ class MauticDataService {
 
         // Prepare valid records for batch insert
         const validRecords = [];
-
+        
         for (const row of batch) {
           // Skip invalid rows
           if (!row.e_id || !row.date_sent || !row.email_address || !row.subject1) {
@@ -370,15 +370,15 @@ class MauticDataService {
             created += result.count;
             skipped += (validRecords.length - result.count);
           } catch (error) {
-            logger.error(`Batch insert error:`, error.message);
+            console.error(`Batch insert error:`, error.message);
             skipped += validRecords.length;
           }
         }
 
-        logger.debug(`   Processed ${Math.min(i + BATCH_SIZE, reportRows.length)}/${reportRows.length} email reports (${created} new, ${skipped} skipped)...`);
+        console.log(`   Processed ${Math.min(i + BATCH_SIZE, reportRows.length)}/${reportRows.length} email reports (${created} new, ${skipped} skipped)...`);
       }
 
-      logger.debug(`✅ Email reports saved: ${created} created, ${skipped} skipped`);
+      console.log(`✅ Email reports saved: ${created} created, ${skipped} skipped`);
 
       return {
         success: true,
@@ -387,7 +387,7 @@ class MauticDataService {
         total: reportRows.length
       };
     } catch (error) {
-      logger.error('Error saving email reports:', error);
+      console.error('Error saving email reports:', error);
       throw new Error(`Failed to save email reports: ${error.message}`);
     }
   }
@@ -411,12 +411,17 @@ class MauticDataService {
           : prisma.mauticClient.findMany({ where: { isActive: true } })
       ]);
 
-      // Calculate total contacts across all segments
-      const segmentsWithCounts = await prisma.mauticSegment.findMany({
-        where,
-        select: { contactCount: true }
-      });
-      const totalContacts = segmentsWithCounts.reduce((sum, seg) => sum + (seg.contactCount || 0), 0);
+      // Prefer using stored unique contact totals from MauticClient when available
+      // Summing segment.contactCount can double-count leads (a lead can be in multiple segments).
+      let totalContacts = 0;
+      if (clientId) {
+        const client = await prisma.mauticClient.findUnique({ where: { id: clientId } });
+        totalContacts = client?.totalContacts || 0;
+      } else {
+        // Sum unique contact totals per client (stored during sync) to avoid double-counting
+        const clients = await prisma.mauticClient.findMany({ select: { totalContacts: true } });
+        totalContacts = clients.reduce((sum, c) => sum + (c.totalContacts || 0), 0);
+      }
 
       // Email statistics
       const emailStats = await prisma.mauticEmail.aggregate({
@@ -435,29 +440,15 @@ class MauticDataService {
         }
       });
 
-      // Top performing emails - sorted by sent count to show most impactful emails
+      // Top performing emails
       const topEmails = await prisma.mauticEmail.findMany({
         where: {
           ...where,
-          sentCount: { gt: 100 } // Only show emails with meaningful volume
+          sentCount: { gt: 0 }
         },
-        orderBy: [
-          { sentCount: 'desc' }, // Primary: highest volume
-          { readRate: 'desc' }   // Secondary: best performance
-        ],
-        take: 7,
-        select: {
-          id: true,
-          name: true,
-          subject: true,
-          sentCount: true,
-          readCount: true,
-          clickedCount: true,
-          unsubscribed: true,
-          bounced: true,
-          readRate: true,
-          clickRate: true,
-          unsubscribeRate: true,
+        orderBy: { readRate: 'desc' },
+        take: 5,
+        include: {
           client: {
             select: { name: true }
           }
@@ -490,18 +481,13 @@ class MauticDataService {
             subject: email.subject,
             client: email.client.name,
             sentCount: email.sentCount,
-            readCount: email.readCount || 0,
-            clickedCount: email.clickedCount || 0,
-            unsubscribed: email.unsubscribed || 0,
-            bounced: email.bounced || 0,
-            readRate: parseFloat(email.readRate || 0).toFixed(2),
-            clickRate: parseFloat(email.clickRate || 0).toFixed(2),
-            unsubscribeRate: parseFloat(email.unsubscribeRate || 0).toFixed(2)
+            readRate: parseFloat(email.readRate).toFixed(2),
+            clickRate: parseFloat(email.clickRate).toFixed(2)
           }))
         }
       };
     } catch (error) {
-      logger.error('Error getting dashboard metrics:', error);
+      console.error('Error getting dashboard metrics:', error);
       throw new Error(`Failed to get dashboard metrics: ${error.message}`);
     }
   }
@@ -551,7 +537,7 @@ class MauticDataService {
 
       return mapped;
     } catch (error) {
-      logger.error('Error fetching clients:', error);
+      console.error('Error fetching clients:', error);
       throw new Error(`Failed to fetch clients: ${error.message}`);
     }
   }
@@ -568,7 +554,7 @@ class MauticDataService {
         data: { lastSyncAt: new Date() }
       });
     } catch (error) {
-      logger.error('Error updating client sync time:', error);
+      console.error('Error updating client sync time:', error);
       throw error;
     }
   }
