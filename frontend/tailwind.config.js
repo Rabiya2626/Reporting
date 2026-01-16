@@ -7,7 +7,7 @@ export default {
   theme: {
     extend: {
       colors: {
-        // Digital Bevy Brand Colors
+        // HC Development Brand Colors
         primary: {
           50: '#e6f7ff',
           100: '#bae7ff',
