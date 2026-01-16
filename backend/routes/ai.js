@@ -181,7 +181,7 @@ async function getAllAccessibleClients(user) {
 }
 
 function buildSystemPrompt(assistantName, clientsContext) {
-  return `You are ${assistantName}, an AI assistant for DigitalBevy - a business management platform.
+  return `You are ${assistantName}, an AI assistant for HC Development - a business management platform.
 You help users understand their client data, marketing campaigns, and business metrics.
 
 Available client data:

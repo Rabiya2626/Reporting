@@ -5,7 +5,7 @@ import { authenticate, generateToken } from '../middleware/auth.js';
 import { authLimiter, signupLimiter, passwordResetLimiter, otpLimiter } from '../middleware/rateLimiter.js';
 import { validate, loginSchema, registerSchema, requestSignupOTPSchema, verifySignupOTPSchema, resetPasswordRequestSchema, verifyResetOTPSchema, resetPasswordSchema, changePasswordSchema } from '../validators/schemas.js';
 import { logActivity } from '../middleware/activityLogger.js';
-import { notifyUserCreated } from '../utils/emailHelper.js';
+import { notifyUserCreated, notifyUserLogin } from '../utils/emailHelper.js';
 import otpService from '../services/otpService.js';
 import logger from '../utils/logger.js';
 
@@ -234,6 +234,11 @@ router.post('/login', authLimiter, validate(loginSchema), async (req, res) => {
       { role: user.role },
       req
     ).catch(err => logger.error('Failed to log activity', { error: err.message }));
+
+    // Send login notification email (non-blocking, only if template is active)
+    notifyUserLogin(user, req.ip).catch(err =>
+      logger.debug('Login notification not sent (may be disabled):', { error: err.message })
+    );
 
     const token = generateToken(user.id, user.tokenVersion);
 

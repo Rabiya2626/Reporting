@@ -3,10 +3,10 @@ import prisma from '../prisma/client.js';
 const defaultNotificationTemplates = [
   {
     action: 'user_welcome',
-    subject: 'Welcome to DigitalBevy - Your Account Credentials',
+    subject: 'Welcome to HC Development - Your Account Credentials',
     template: `<p>Hello <strong>{{user_name}}</strong>,</p>
 
-<p>Welcome to DigitalBevy! Your account has been created by <strong>{{created_by}}</strong>.</p>
+<p>Welcome to HC Development! Your account has been created by <strong>{{created_by}}</strong>.</p>
 
 <h3>Your Login Credentials</h3>
 <p>
@@ -254,6 +254,25 @@ Created by: {{action_by}}</p>
 
 <p><small>Created on: {{timestamp}}</small></p>`,
     active: true
+  },
+  {
+    action: 'user_login',
+    subject: 'New Login to Your Account',
+    template: `<p>Hello <strong>{{user_name}}</strong>,</p>
+
+<p>A new login to your account was detected.</p>
+
+<h3>Login Details</h3>
+<p>
+  <strong>Account:</strong> {{user_email}}<br>
+  <strong>Role:</strong> {{user_role}}<br>
+  <strong>Time:</strong> {{timestamp}}<br>
+  <strong>IP Address:</strong> {{ip_address}}
+</p>
+
+<h3>Security Notice</h3>
+<p>If this was you, you can safely ignore this email. If you did not log in, please contact your administrator immediately and change your password.</p>`,
+    active: false
   },
   {
     action: 'otp_login',

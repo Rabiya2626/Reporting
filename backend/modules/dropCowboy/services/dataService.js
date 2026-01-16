@@ -270,6 +270,28 @@ class DataService {
         whereClause.campaignId = {
           in: filters.campaignIds,
         };
+      } else if (filters.clientNames && Array.isArray(filters.clientNames)) {
+        // Filter by accessible client names (for non-full-access users)
+        const clientIds = await prisma.client.findMany({
+          where: { 
+            name: { in: filters.clientNames },
+            clientType: "mautic" 
+          },
+          select: { id: true }
+        });
+        
+        const mauticClientIds = clientIds.map(c => c.id);
+        
+        if (mauticClientIds.length > 0) {
+          const accessibleCampaigns = await prisma.dropCowboyCampaign.findMany({
+            where: { clientId: { in: mauticClientIds } },
+            select: { campaignId: true }
+          });
+          whereClause.campaignId = { in: accessibleCampaigns.map(c => c.campaignId) };
+        } else {
+          // No accessible clients - return empty result
+          whereClause.campaignId = { in: [] };
+        }
       } else {
         // ALWAYS filter to only show campaigns linked to Mautic clients (unless specific campaignIds provided)
         // Get all Mautic client IDs

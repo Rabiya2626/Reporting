@@ -221,7 +221,7 @@ class EmailNotificationService {
                 This is an automated notification from your Reporting Dashboard
               </p>
               <p style="margin: 0; color: #9ca3af; font-size: 12px;">
-                &copy; ${new Date().getFullYear()} Digital Bevy. All rights reserved.
+                &copy; ${new Date().getFullYear()} HC Development. All rights reserved.
               </p>
               <div style="margin-top: 20px;">
                 <a href="#" style="color: #667eea; text-decoration: none; font-size: 12px; margin: 0 8px;">Privacy Policy</a>

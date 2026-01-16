@@ -58,8 +58,11 @@ class StatsService {
 
   async getApplicationStats(options = {}) {
     try {
-      const { fromDate, toDate } = options;
+      const { fromDate, toDate, clientIds } = options;
       const dateFilter = StatsService.buildDateFilter(fromDate, toDate);
+
+      // Add client filtering if specified (for non-full-access users)
+      const clientFilter = clientIds ? { clientId: { in: clientIds } } : {};
 
       const [
         emailAggregate,
@@ -71,7 +74,7 @@ class StatsService {
         topEmails
       ] = await Promise.all([
         prisma.mauticEmail.aggregate({
-          where: dateFilter,
+          where: { ...dateFilter, ...clientFilter },
           _sum: {
             sentCount: true,
             readCount: true,
@@ -85,12 +88,12 @@ class StatsService {
             unsubscribeRate: true
           }
         }),
-        prisma.mauticEmail.count({ where: dateFilter }),
-        prisma.mauticCampaign.count(),
-        prisma.mauticSegment.count(),
-        prisma.mauticClient.count({ where: { isActive: true } }),
+        prisma.mauticEmail.count({ where: { ...dateFilter, ...clientFilter } }),
+        prisma.mauticCampaign.count({ where: clientFilter }),
+        prisma.mauticSegment.count({ where: clientFilter }),
+        prisma.mauticClient.count({ where: { isActive: true, ...(clientIds ? { clientId: { in: clientIds } } : {}) } }),
         prisma.mauticClient.findMany({
-          where: { isActive: true },
+          where: { isActive: true, ...(clientIds ? { clientId: { in: clientIds } } : {}) },
           select: {
             id: true,
             name: true,
@@ -102,6 +105,7 @@ class StatsService {
         prisma.mauticEmail.findMany({
           where: {
             ...dateFilter,
+            ...clientFilter,
             sentCount: { gt: 100 }
           },
           orderBy: [

@@ -1,6 +1,7 @@
 import logger from '../utils/logger.js';
 import prisma from '../prisma/client.js';
 import emailService from '../services/emailNotificationService.js';
+import { getUserActualRole } from '../middleware/auth.js';
 
 /**
  * Email Helper Utility
@@ -170,7 +171,7 @@ export async function notifyUserCreated(user, creator, temporaryPassword) {
     variables: {
       user_name: user.name,
       user_email: user.email,
-      user_role: user.role,
+      user_role: getUserActualRole(user),
       temporary_password: temporaryPassword,
       created_by: creator.name,
       timestamp: new Date().toLocaleString('en-US', {
@@ -198,7 +199,7 @@ export async function notifyUserUpdated(user, updater, updatedFields = []) {
     variables: {
       user_name: user.name,
       user_email: user.email,
-      user_role: user.role,
+      user_role: getUserActualRole(user),
       action_by: updater.name,
       updated_by: updater.name,
       updated_fields: updatedFields.length > 0 ? updatedFields.join(', ') : 'profile information',
@@ -280,6 +281,29 @@ export async function notifyClientUnassigned(client, unassignedUser, unassignedB
       { name: unassignedUser.name, email: unassignedUser.email }
     ],
     notifySuperadmins: false
+  });
+}
+
+/**
+ * Convenience wrapper for user login notification
+ * Sends security notification to user on successful login
+ */
+export async function notifyUserLogin(user, ipAddress) {
+  return await sendActionNotification('user_login', {
+    variables: {
+      user_name: user.name,
+      user_email: user.email,
+      user_role: getUserActualRole(user),
+      ip_address: ipAddress || 'Unknown',
+      timestamp: new Date().toLocaleString('en-US', {
+        timeZone: 'America/Los_Angeles',
+        dateStyle: 'medium',
+        timeStyle: 'short'
+      })
+    },
+    recipients: [
+      { name: user.name, email: user.email }
+    ]
   });
 }
 

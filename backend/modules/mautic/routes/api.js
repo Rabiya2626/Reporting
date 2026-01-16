@@ -12,6 +12,7 @@ import {
 } from "../../../utils/emailHelper.js";
 import DropCowboyDataService from "../../dropCowboy/services/dataService.js";
 import DropCowboyScheduler from "../../dropCowboy/services/schedulerService.js";
+import { authenticate, hasFullAccess, getAccessibleClientIds } from '../../../middleware/auth.js';
 
 const router = express.Router();
 const schedulerService = new MauticSchedulerService();
@@ -1135,13 +1136,21 @@ router.get("/dashboard", async (req, res) => {
 
 /**
  * GET /api/mautic/stats/overview
- * Application-level stats - all clients aggregated
+ * Application-level stats - filtered by user's accessible clients
  * Query params: fromDate, toDate
  */
-router.get("/stats/overview", async (req, res) => {
+router.get("/stats/overview", authenticate, async (req, res) => {
   try {
     const { fromDate, toDate } = req.query;
-    const result = await statsService.getApplicationStats({ fromDate, toDate });
+    
+    // Get accessible client IDs for current user
+    let clientIds = null;
+    if (!hasFullAccess(req.user)) {
+      const accessibleClientIds = await getAccessibleClientIds(req.user.id, req.user);
+      clientIds = accessibleClientIds;
+    }
+    
+    const result = await statsService.getApplicationStats({ fromDate, toDate, clientIds });
     res.json(result);
   } catch (error) {
     logger.error("Error fetching application stats:", error);

@@ -1,8 +1,8 @@
-# DigitalBevy Development Platform
+# HC Development Platform
 
 ## Overview
 
-DigitalBevy is a comprehensive business management platform designed to integrate CRM, campaign management, and a robust user hierarchy system. It aims to streamline business operations, enhance client management, and provide insightful analytics through centralized dashboards. The platform supports dynamic customization and integrates with key external marketing and communication tools.
+HC Development is a comprehensive business management platform designed to integrate CRM, campaign management, and a robust user hierarchy system. It aims to streamline business operations, enhance client management, and provide insightful analytics through centralized dashboards. The platform supports dynamic customization and integrates with key external marketing and communication tools.
 
 ## User Preferences
 

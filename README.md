@@ -1,10 +1,11 @@
-# DigitalBevy Development Platform
+# HC Development Platform
 
 A comprehensive business management platform with integrated CRM, campaign management, and user hierarchy system.
 
 ## 🏗️ Architecture
 
 ### **Technology Stack**
+
 
 **Backend:**
 
