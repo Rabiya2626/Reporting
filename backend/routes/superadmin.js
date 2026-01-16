@@ -1577,7 +1577,7 @@ function wrapInEmailTemplate(content, subject) {
           <tr>
             <td style="padding: 32px 40px; text-align: center;">
               <p style="margin: 0 0 12px 0; color: #6b7280; font-size: 13px;">This is an automated notification from your system</p>
-              <p style="margin: 0; color: #9ca3af; font-size: 12px;">&copy; ${new Date().getFullYear()} Digital Bevy. All rights reserved.</p>
+              <p style="margin: 0; color: #9ca3af; font-size: 12px;">&copy; ${new Date().getFullYear()} HC Development. All rights reserved.</p>
             </td>
           </tr>
         </table>
