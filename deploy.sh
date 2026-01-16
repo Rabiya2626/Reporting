@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# DigitalBevy Deployment Script
-# Interactive deployment script for DigitalBevy platform
+# HC Development Deployment Script
+# Interactive deployment script for HC Development platform
 # Supports both MySQL and PostgreSQL databases
 
 set -e
@@ -254,7 +254,7 @@ create_env_file() {
     fi
     
     cat > "$ENV_FILE" << EOF
-# DigitalBevy Environment Configuration
+# HC Development Environment Configuration
 # Generated on $(date)
 
 # Server Configuration
@@ -390,7 +390,7 @@ start_application() {
     ensure_pm2
     
     # Stop existing instance if running
-    pm2 delete digitalbevy 2>/dev/null || true
+    pm2 delete hc-development 2>/dev/null || true
     
     # Check if ecosystem.config.cjs exists
     if [ -f "ecosystem.config.cjs" ]; then
@@ -400,7 +400,7 @@ start_application() {
     else
         # Start directly with server.js
         print_step "Starting server.js with PM2..."
-        pm2 start server.js --name "digitalbevy" -i 1 --env production
+        pm2 start server.js --name "hc-development" -i 1 --env production
     fi
     
     pm2 save
@@ -409,7 +409,7 @@ start_application() {
     echo ""
     print_info "Useful PM2 commands:"
     echo "  pm2 status            - Check status"
-    echo "  pm2 logs digitalbevy  - View logs"
+    echo "  pm2 logs hc-development  - View logs"
     echo "  pm2 restart all       - Restart"
     echo "  pm2 stop all          - Stop"
 }
@@ -418,7 +418,7 @@ start_application() {
 print_summary() {
     print_header "Deployment Complete!"
     
-    echo -e "${GREEN}Your DigitalBevy application has been deployed!${NC}"
+    echo -e "${GREEN}Your HC Development application has been deployed!${NC}"
     echo ""
     echo "Configuration Summary:"
     echo "  • Database: $DB_PROVIDER"
@@ -428,7 +428,7 @@ print_summary() {
     echo "Access your application at: $SITE_URL:$APP_PORT"
     echo ""
     print_info "Default superadmin credentials (if seeded):"
-    echo "  Email: admin@digitalbevy.com"
+    echo "  Email: admin@hcdevelopment.com"
     echo "  Password: admin123"
     echo ""
     print_warning "IMPORTANT: Change the default password immediately!"
@@ -488,7 +488,7 @@ main() {
     echo ""
     echo -e "${CYAN}╔═══════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║                                                                   ║${NC}"
-    echo -e "${CYAN}║     ${GREEN}DigitalBevy Deployment Script${CYAN}                                ║${NC}"
+    echo -e "${CYAN}║     ${GREEN}HC Development Deployment Script${CYAN}                             ║${NC}"
     echo -e "${CYAN}║     Business Management Platform                                 ║${NC}"
     echo -e "${CYAN}║                                                                   ║${NC}"
     echo -e "${CYAN}╚═══════════════════════════════════════════════════════════════════╝${NC}"
@@ -518,7 +518,7 @@ main() {
 
 # Show help
 if [ "$1" == "--help" ] || [ "$1" == "-h" ]; then
-    echo "DigitalBevy Deployment Script"
+    echo "HC Development Deployment Script"
     echo ""
     echo "Usage: ./deploy.sh [OPTIONS]"
     echo ""

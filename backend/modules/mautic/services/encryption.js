@@ -1,6 +1,24 @@
 import crypto from 'crypto';
 
-const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || crypto.randomBytes(32).toString('hex');
+// Generate or validate encryption key
+let ENCRYPTION_KEY = process.env.ENCRYPTION_KEY;
+
+// Validate key or generate a secure one
+if (!ENCRYPTION_KEY || ENCRYPTION_KEY === 'your_64_character_encryption_key_here_generate_with_openssl_rand_hex_32') {
+  // Generate a proper 64-character hex key (32 bytes)
+  ENCRYPTION_KEY = crypto.randomBytes(32).toString('hex');
+  console.warn('⚠️  ENCRYPTION_KEY not set or using default. Generated temporary key. Set ENCRYPTION_KEY in .env for persistence.');
+}
+
+// Validate key length (must be 64 hex characters = 32 bytes)
+if (ENCRYPTION_KEY.length !== 64) {
+  console.error(`❌ Invalid ENCRYPTION_KEY length: ${ENCRYPTION_KEY.length} (expected 64 hex characters)`);
+  console.error('Generate a proper key with: openssl rand -hex 32');
+  // Generate a valid key as fallback
+  ENCRYPTION_KEY = crypto.randomBytes(32).toString('hex');
+  console.warn('⚠️  Using temporary generated key. Please set a proper ENCRYPTION_KEY in .env');
+}
+
 const ALGORITHM = 'aes-256-cbc';
 
 class EncryptionService {
@@ -13,7 +31,13 @@ class EncryptionService {
     if (!text) return '';
     
     try {
-      const key = Buffer.from(ENCRYPTION_KEY.slice(0, 64), 'hex');
+      // Convert 64-char hex string to 32-byte buffer
+      const key = Buffer.from(ENCRYPTION_KEY, 'hex');
+      
+      if (key.length !== 32) {
+        throw new Error(`Invalid key length: ${key.length} bytes (expected 32)`);
+      }
+      
       const iv = crypto.randomBytes(16);
       const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
       
@@ -37,7 +61,13 @@ class EncryptionService {
     if (!encryptedText) return '';
     
     try {
-      const key = Buffer.from(ENCRYPTION_KEY.slice(0, 64), 'hex');
+      // Convert 64-char hex string to 32-byte buffer
+      const key = Buffer.from(ENCRYPTION_KEY, 'hex');
+      
+      if (key.length !== 32) {
+        throw new Error(`Invalid key length: ${key.length} bytes (expected 32)`);
+      }
+      
       const parts = encryptedText.split(':');
       
       if (parts.length !== 2) {

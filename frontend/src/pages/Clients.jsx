@@ -516,7 +516,8 @@ const Clients = () => {
                                                             const badgeClass = isManager
                                                                 ? 'bg-purple-100 text-purple-800 border border-purple-200'
                                                                 : 'bg-green-100 text-green-800 border border-green-200';
-                                                            const roleLabel = isManager ? 'Manager' : 'Employee';
+                                                            // Get actual role name: prefer customRole.name, fall back to role
+                                                            const roleLabel = a.user?.customRole?.name || (a.user?.role ? a.user.role.charAt(0).toUpperCase() + a.user.role.slice(1) : 'Unknown');
                                                             return (
                                                                 <div key={a.id || a.user?.id} className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                                                                     <span className={`inline-flex items-center gap-2 px-2 py-1 rounded-md text-sm ${badgeClass}`}>

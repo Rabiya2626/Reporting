@@ -786,6 +786,29 @@ export const filterClientsByRole = async (req, baseWhere = {}) => {
   };
 };
 
+/**
+ * Get the actual role name for display purposes
+ * Always prefer customRole.name when available
+ * 
+ * @param {Object} user - User object with role and customRole
+ * @returns {string} - Actual role name for display
+ */
+export const getUserActualRole = (user) => {
+  if (!user) return 'Unknown';
+  
+  // Prefer custom role name if available
+  if (user.customRole?.name) {
+    return user.customRole.name;
+  }
+  
+  // Fall back to legacy role with capitalization
+  if (user.role) {
+    return user.role.charAt(0).toUpperCase() + user.role.slice(1);
+  }
+  
+  return 'Unknown';
+};
+
 // Legacy alias for backward compatibility
 export const auth = authenticate;
 
@@ -810,5 +833,6 @@ export default {
   canManageEmployee,
   getAccessibleClientIds,
   filterClientsByRole,
-  generateToken
+  generateToken,
+  getUserActualRole
 };
