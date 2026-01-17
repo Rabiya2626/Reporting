@@ -3,7 +3,23 @@ import prisma from '../prisma/client.js';
 import logger from '../utils/logger.js';
 
 class NotificationService {
-  // Remove constructor, always use DB credentials
+  
+  /**
+   * Get dynamic company name from site settings (for white-labeling)
+   * @returns {Promise<string>} Company name or default
+   */
+  async getCompanyName() {
+    try {
+      const siteSettings = await prisma.siteSettings.findFirst({
+        orderBy: { updatedAt: 'desc' },
+        select: { siteTitle: true }
+      });
+      return siteSettings?.siteTitle || 'Reporting Dashboard';
+    } catch (error) {
+      logger.error('Error fetching company name from site settings:', error);
+      return 'Reporting Dashboard';
+    }
+  }
 
   // Create a notification
   async createNotification(data) {
@@ -124,12 +140,15 @@ class NotificationService {
         }
       }
 
+      // Get dynamic company name for white-labeling
+      const companyName = await this.getCompanyName();
+      
       // Compose email
       const mailOptions = {
         from: smtpCred.fromAddress,
         to: recipient.email,
         subject: notification.title,
-        html: this.generateEmailTemplate(notification, recipient, senderName)
+        html: this.generateEmailTemplate(notification, recipient, senderName, companyName)
       };
 
       // Send email
@@ -148,7 +167,7 @@ class NotificationService {
   }
 
   // Get email template based on notification type
-  getEmailTemplate(notification) {
+  getEmailTemplate(notification, companyName = 'Reporting Dashboard') {
     const baseUrl = process.env.FRONTEND_URL || '';
     
     const templates = {
@@ -165,7 +184,7 @@ class NotificationService {
             </div>
             <p>Please make sure to complete this task on time.</p>
             <a href="${baseUrl}/tasks" style="display: inline-block; background: #2563eb; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; margin: 20px 0;">View Tasks</a>
-            <p style="color: #6b7280; font-size: 12px;">Best regards,<br>HC Development Team</p>
+            <p style="color: #6b7280; font-size: 12px;">Best regards,<br>${companyName} Team</p>
           </div>
         `
       },
@@ -181,7 +200,7 @@ class NotificationService {
               <p style="margin: 0; color: #6b7280;">${notification.message}</p>
             </div>
             <a href="${baseUrl}/projects" style="display: inline-block; background: #16a34a; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; margin: 20px 0;">View Projects</a>
-            <p style="color: #6b7280; font-size: 12px;">Best regards,<br>HC Development Team</p>
+            <p style="color: #6b7280; font-size: 12px;">Best regards,<br>${companyName} Team</p>
           </div>
         `
       },
@@ -197,7 +216,7 @@ class NotificationService {
               <div style="color: #6b7280;">${notification.message}</div>
             </div>
             <a href="${baseUrl}/dashboard" style="display: inline-block; background: #7c3aed; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; margin: 20px 0;">View Dashboard</a>
-            <p style="color: #6b7280; font-size: 12px;">Best regards,<br>HC Development Team</p>
+            <p style="color: #6b7280; font-size: 12px;">Best regards,<br>${companyName} Team</p>
           </div>
         `
       }
@@ -209,7 +228,7 @@ class NotificationService {
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
           <h2 style="color: #2563eb;">${notification.title}</h2>
           <p>${notification.message}</p>
-          <p style="color: #6b7280; font-size: 12px;">Best regards,<br>HC Development Team</p>
+          <p style="color: #6b7280; font-size: 12px;">Best regards,<br>${companyName} Team</p>
         </div>
       `
     };
@@ -378,6 +397,12 @@ class NotificationService {
       </ul>
       <p>Keep up the great work!</p>
     `;
+  }
+
+  // Generate email template (wrapper for getEmailTemplate)
+  generateEmailTemplate(notification, recipient, senderName, companyName = 'Reporting Dashboard') {
+    const template = this.getEmailTemplate(notification, companyName);
+    return template.html;
   }
 }
 

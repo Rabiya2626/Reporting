@@ -1445,6 +1445,13 @@ router.post('/send-maintenance-email', async (req, res) => {
       });
     }
 
+    // Get company name from site settings for white-labeling
+    const siteSettings = await prisma.siteSettings.findFirst({
+      orderBy: { updatedAt: 'desc' },
+      select: { siteTitle: true }
+    });
+    const companyName = siteSettings?.siteTitle || 'Reporting Dashboard';
+
     // Import nodemailer
     const nodemailer = await import('nodemailer');
     
@@ -1470,7 +1477,8 @@ router.post('/send-maintenance-email', async (req, res) => {
         const variables = {
           recipient_name: user.name,
           user_name: user.name,
-          user_email: user.email
+          user_email: user.email,
+          company_name: companyName
         };
         
         const renderedBody = renderTemplate(template, variables);
@@ -1480,7 +1488,7 @@ router.post('/send-maintenance-email', async (req, res) => {
           from: smtpCred.fromAddress,
           to: user.email,
           subject: renderedSubject,
-          html: wrapInEmailTemplate(renderedBody, renderedSubject)
+          html: wrapInEmailTemplate(renderedBody, renderedSubject, companyName)
         };
 
         await transporter.sendMail(mailOptions);
@@ -1545,7 +1553,7 @@ function renderTemplate(template, variables = {}) {
   });
 }
 
-function wrapInEmailTemplate(content, subject) {
+function wrapInEmailTemplate(content, subject, companyName = 'Reporting Dashboard') {
   return `
 <!DOCTYPE html>
 <html lang="en">
@@ -1576,8 +1584,8 @@ function wrapInEmailTemplate(content, subject) {
           </tr>
           <tr>
             <td style="padding: 32px 40px; text-align: center;">
-              <p style="margin: 0 0 12px 0; color: #6b7280; font-size: 13px;">This is an automated notification from your system</p>
-              <p style="margin: 0; color: #9ca3af; font-size: 12px;">&copy; ${new Date().getFullYear()} HC Development. All rights reserved.</p>
+              <p style="margin: 0 0 12px 0; color: #6b7280; font-size: 13px;">This is an automated notification from your ${companyName}</p>
+              <p style="margin: 0; color: #9ca3af; font-size: 12px;">&copy; ${new Date().getFullYear()} ${companyName}. All rights reserved.</p>
             </td>
           </tr>
         </table>

@@ -3,10 +3,10 @@ import prisma from '../prisma/client.js';
 const defaultNotificationTemplates = [
   {
     action: 'user_welcome',
-    subject: 'Welcome to HC Development - Your Account Credentials',
+    subject: 'Welcome to {{company_name}} - Your Account Credentials',
     template: `<p>Hello <strong>{{user_name}}</strong>,</p>
 
-<p>Welcome to HC Development! Your account has been created by <strong>{{created_by}}</strong>.</p>
+<p>Welcome to {{company_name}}! Your account has been created by <strong>{{created_by}}</strong>.</p>
 
 <h3>Your Login Credentials</h3>
 <p>
