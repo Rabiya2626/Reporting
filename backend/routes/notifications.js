@@ -278,7 +278,7 @@ router.post('/test', async (req, res) => {
       error_message: 'Sample error message',
       action_by: req.user?.name || 'System Admin',
       timestamp: usTimestamp,
-      company: 'HC Development',
+      company_name: 'Your Company', // This will be replaced with actual site settings company name
       bounce_rate: '15.5',
       open_rate: '42.3',
       quota_limit: '10,000',

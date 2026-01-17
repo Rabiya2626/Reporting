@@ -11,6 +11,23 @@ import prisma from '../prisma/client.js';
 class EmailNotificationService {
   
   /**
+   * Get dynamic company name from site settings (for white-labeling)
+   * @returns {Promise<string>} Company name or default
+   */
+  async getCompanyName() {
+    try {
+      const siteSettings = await prisma.siteSettings.findFirst({
+        orderBy: { updatedAt: 'desc' },
+        select: { siteTitle: true }
+      });
+      return siteSettings?.siteTitle || 'Reporting Dashboard';
+    } catch (error) {
+      logger.error('Error fetching company name from site settings:', error);
+      return 'Reporting Dashboard';
+    }
+  }
+  
+  /**
    * Send notification email for a specific action
    * 
    * @param {string} action - The action key (e.g., 'client_imported', 'sync_completed')
@@ -79,9 +96,13 @@ class EmailNotificationService {
         }
       });
       
+      // Get dynamic company name for white-labeling
+      const companyName = await this.getCompanyName();
+      
       // Prepare variables for interpolation
       const templateVars = {
         recipient_name: recipientName || recipientEmail,
+        company_name: companyName,
         ...variables
       };
       
@@ -96,7 +117,7 @@ class EmailNotificationService {
         from: smtpCred.fromAddress,
         to: recipientEmail,
         subject: renderedSubject,
-        html: this.wrapInEmailTemplate(renderedBody, renderedSubject)
+        html: this.wrapInEmailTemplate(renderedBody, renderedSubject, companyName)
       };
 
       const info = await transporter.sendMail(mailOptions);
@@ -162,9 +183,10 @@ class EmailNotificationService {
    * 
    * @param {string} content - Email content (HTML or plain text)
    * @param {string} subject - Email subject for header
+   * @param {string} companyName - Dynamic company name for white-labeling
    * @returns {string} - Full HTML email
    */
-  wrapInEmailTemplate(content, subject) {
+  wrapInEmailTemplate(content, subject, companyName = 'Reporting Dashboard') {
     return `
 <!DOCTYPE html>
 <html lang="en">
@@ -218,10 +240,10 @@ class EmailNotificationService {
           <tr>
             <td style="padding: 32px 40px; text-align: center;">
               <p style="margin: 0 0 12px 0; color: #6b7280; font-size: 13px; line-height: 1.6;">
-                This is an automated notification from your Reporting Dashboard
+                This is an automated notification from your ${companyName}
               </p>
               <p style="margin: 0; color: #9ca3af; font-size: 12px;">
-                &copy; ${new Date().getFullYear()} HC Development. All rights reserved.
+                &copy; ${new Date().getFullYear()} ${companyName}. All rights reserved.
               </p>
               <div style="margin-top: 20px;">
                 <a href="#" style="color: #667eea; text-decoration: none; font-size: 12px; margin: 0 8px;">Privacy Policy</a>

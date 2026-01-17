@@ -180,8 +180,15 @@ async function getAllAccessibleClients(user) {
   });
 }
 
-function buildSystemPrompt(assistantName, clientsContext) {
-  return `You are ${assistantName}, an AI assistant for HC Development - a business management platform.
+async function buildSystemPrompt(assistantName, clientsContext) {
+  // Get company name from site settings for white-labeling
+  const siteSettings = await prisma.siteSettings.findFirst({
+    orderBy: { updatedAt: 'desc' },
+    select: { siteTitle: true }
+  });
+  const companyName = siteSettings?.siteTitle || 'Business Management Platform';
+  
+  return `You are ${assistantName}, an AI assistant for ${companyName} - a business management platform.
 You help users understand their client data, marketing campaigns, and business metrics.
 
 Available client data:
@@ -288,7 +295,7 @@ router.post("/chat", authenticate, async (req, res) => {
       })
       .join("\n");
 
-    const systemPrompt = buildSystemPrompt(settings?.assistantName || 'Bevy', clientsContext);
+    const systemPrompt = await buildSystemPrompt(settings?.assistantName || 'Bevy', clientsContext);
 
     const messages = [
       { role: "system", content: systemPrompt },
