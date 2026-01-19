@@ -39,3 +39,7 @@ The following items are listed in order of the original submission:
 
 11. **Bug/UI: Lowercase Names in Assignment**
     There is an issue with lowercase names appearing in the assigned column and the assignment modal.
+
+12. **Bug/Permission: Total Campaign Cost Visibility for Full Access Roles**  
+    Any user with a role that has **"Full System Access"** should be able to see any Ringless Voicemail client’s **Total Campaign Cost**, but currently cannot.  
+    The visibility is hardcoded to only display for `"superadmin"`, which should be updated to include all roles with full system access.
