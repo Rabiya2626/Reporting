@@ -556,13 +556,12 @@ Shows assigned clients only:
 **Metrics at a glance:**
 
 | Metric | Description |
-|--------|-------------|
-| Total Records | Total voicemail records synced |
-| Connected | Successfully connected calls |
-| No Answer | Calls with no answer |
-| Busy | Busy signal calls |
-| Failed | Failed delivery attempts |
-| Cost | Total spend on campaigns |
+|---------|-------------|
+| **Total Voicemails Sent** | The total number of ringless voicemails sent across all filtered campaigns. |
+| **Successful Deliveries** | The number of voicemails successfully delivered to recipients. Also shows the delivery rate percentage. |
+| **Failed Deliveries** | The number of voicemails that failed to send due to invalid numbers, carrier errors, or network issues. Shows the failure rate percentage. |
+| **Other Status** | The count of records with statuses other than “Delivered” or “Failed” (e.g., pending, queued, unknown). Shows their rate percentage. |
+| **Total Campaign Cost (SuperAdmin/Full Access Roles only)** | Displays the total spend on voicemail campaigns. Visible only to Super Admin users. |
 
 **How to use:**
 
