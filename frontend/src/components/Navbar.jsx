@@ -12,6 +12,7 @@ const Navbar = () => {
     const location = useLocation();
     const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
     const [siteLogo, setSiteLogo] = useState(null);
+    const [siteTitle, setSiteTitle] = useState('');
 
     useEffect(() => {
         let mounted = true;
@@ -19,6 +20,7 @@ const Navbar = () => {
             const site = res.data?.data;
             if (!mounted || !site) return;
             if (site.logoPath) setSiteLogo(site.logoPath);
+            if (site.siteTitle) setSiteTitle(site.siteTitle);
         }).catch(() => {});
 
         // listen for immediate updates when customization is changed in Settings
@@ -27,6 +29,7 @@ const Navbar = () => {
             if (payload && payload.logoPath) setSiteLogo(payload.logoPath);
             // if payload doesn't include logoPath, clear if null
             if (payload && payload.logoPath === null) setSiteLogo(null);
+            if (payload && payload.siteTitle) setSiteTitle(payload.siteTitle);
         };
         window.addEventListener('site-customization-updated', handler);
         return () => { window.removeEventListener('site-customization-updated', handler); mounted = false };
@@ -90,10 +93,10 @@ const Navbar = () => {
                     <Link to="/dashboard" className="flex items-center hover:opacity-80 transition-opacity shrink-0">
                         {siteLogo ? (
                             // show only rectangular logo when available
-                            <img src={siteLogo} alt="Site Logo" className="h-8 w-auto rounded-none object-contain" />
+                            <img src={siteLogo} alt={siteTitle || 'Site Logo'} className="h-8 w-auto rounded-none object-contain" />
                         ) : (
                             <>
-                                <img src="/logo.png" alt="HC Development" className="h-8 w-8 mr-2 rounded-full object-contain" />
+                                <img src="/logo.png" alt={siteTitle || 'Logo'} className="h-8 w-8 mr-2 rounded-full object-contain" />
                             </>
                         )}
                     </Link>

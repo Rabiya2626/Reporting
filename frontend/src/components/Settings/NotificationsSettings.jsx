@@ -76,7 +76,7 @@ const NotificationsSettings = () => {
   const [notifications, setNotifications] = useState([]);
   const [notifLoading, setNotifLoading] = useState(false);
   const [editingNotif, setEditingNotif] = useState(null);
-  const [newNotif, setNewNotif] = useState({ action: '', template: '', active: true });
+  const [newNotif, setNewNotif] = useState({ action: '', subject: '', template: '', active: true });
   const [emailEnabled, setEmailEnabled] = useState(true);
   const [emailEnableSaving, setEmailEnableSaving] = useState(false);
   const [activityEmailEnabled, setActivityEmailEnabled] = useState(true);
@@ -134,11 +134,12 @@ const NotificationsSettings = () => {
 
   const handleCreateNotification = async () => {
     if (!newNotif.action || !newNotif.template) return toast.error('Action and template are required');
+    if (!newNotif.subject) return toast.error('Email subject is required');
     try {
       const res = await axios.post('/api/superadmin/notifications', newNotif);
       if (res.data?.success) {
         toast.success('Notification created');
-        setNewNotif({ action: '', template: '', active: true });
+        setNewNotif({ action: '', subject: '', template: '', active: true });
         await fetchNotifications();
       } else {
         toast.error(res.data?.message || 'Failed to create notification');
@@ -417,12 +418,33 @@ const NotificationsSettings = () => {
                   Select an action to see available variables
                 </div>
               )}
-              <textarea placeholder="Template" className="form-input h-24 w-full text-sm" value={newNotif.template} onChange={(e) => setNewNotif(n => ({ ...n, template: e.target.value }))} />
+              <div className="mb-2">
+                <label className="block text-xs font-medium text-gray-700 mb-1">Email Subject:</label>
+                <input 
+                  type="text" 
+                  placeholder="Enter email subject (supports variables like {{company_name}})" 
+                  className="form-input w-full text-sm mb-2" 
+                  value={newNotif.subject || ''} 
+                  onChange={(e) => setNewNotif(n => ({ ...n, subject: e.target.value }))} 
+                />
+              </div>
+              <div className="mb-2">
+                <label className="block text-xs font-medium text-gray-700 mb-1">Email Body:</label>
+                <textarea 
+                  placeholder="Enter email template (supports variables)" 
+                  className="form-input h-32 w-full text-sm" 
+                  value={newNotif.template} 
+                  onChange={(e) => setNewNotif(n => ({ ...n, template: e.target.value }))} 
+                />
+              </div>
               <div className="mt-2 flex items-center gap-2">
                 <button type="button" onClick={() => setNewPreviewOpen(p => !p)} className="btn btn-secondary btn-sm text-sm px-2 py-1">{newPreviewOpen ? 'Hide Preview' : 'Preview'}</button>
                 {newPreviewOpen && (
                   <div className="p-3 bg-white border rounded w-full mt-2">
-                    <div className="text-xs text-gray-500 mb-1">Rendered preview</div>
+                    <div className="text-xs text-gray-500 mb-2">
+                      <strong>Subject:</strong> {renderTemplate(newNotif.subject || 'No subject specified')}
+                    </div>
+                    <div className="text-xs text-gray-500 mb-1">Body:</div>
                     <div className="whitespace-pre-wrap text-sm text-gray-800">{renderTemplate(newNotif.template)}</div>
                   </div>
                 )}
@@ -508,12 +530,33 @@ const NotificationsSettings = () => {
                               Select an action to see available variables
                             </div>
                           )}
-                          <textarea className="form-input w-full h-24" value={n.template} onChange={(e) => setNotifications(prev => prev.map(x => x.id === n.id ? { ...x, template: e.target.value } : x))} />
+                          <div className="mb-2">
+                            <label className="block text-xs font-medium text-gray-700 mb-1">Email Subject:</label>
+                            <input 
+                              type="text" 
+                              className="form-input w-full" 
+                              placeholder="Enter email subject (supports variables like {{company_name}})" 
+                              value={n.subject || ''} 
+                              onChange={(e) => setNotifications(prev => prev.map(x => x.id === n.id ? { ...x, subject: e.target.value } : x))} 
+                            />
+                          </div>
+                          <div className="mb-2">
+                            <label className="block text-xs font-medium text-gray-700 mb-1">Email Body:</label>
+                            <textarea 
+                              className="form-input w-full h-32" 
+                              placeholder="Enter email template (supports variables)" 
+                              value={n.template} 
+                              onChange={(e) => setNotifications(prev => prev.map(x => x.id === n.id ? { ...x, template: e.target.value } : x))} 
+                            />
+                          </div>
                           <div className="mt-2 flex items-center gap-2">
                             <button type="button" onClick={() => setEditingPreviewId(editingPreviewId === n.id ? null : n.id)} className="btn btn-secondary btn-sm">{editingPreviewId === n.id ? 'Hide Preview' : 'Preview'}</button>
                             {editingPreviewId === n.id && (
                               <div className="p-3 bg-white border rounded w-full mt-2">
-                                <div className="text-xs text-gray-500 mb-1">Rendered preview</div>
+                                <div className="text-xs text-gray-500 mb-2">
+                                  <strong>Subject:</strong> {renderTemplate(n.subject || 'No subject specified')}
+                                </div>
+                                <div className="text-xs text-gray-500 mb-1">Body:</div>
                                 <div className="whitespace-pre-wrap text-sm text-gray-800">{renderTemplate(n.template)}</div>
                               </div>
                             )}
@@ -521,8 +564,14 @@ const NotificationsSettings = () => {
                         </div>
                       ) : (
                         <div>
-                          <div className="text-xs font-medium text-gray-700">{getActionLabel(n.action)}</div>
-                          <textarea readOnly className="form-input w-full h-32 text-xs bg-gray-50 mt-2" value={n.template} />
+                          <div className="text-xs font-medium text-gray-700 mb-2">{getActionLabel(n.action)}</div>
+                          {n.subject && (
+                            <div className="text-xs text-gray-600 mb-2">
+                              <strong>Subject:</strong> {n.subject}
+                            </div>
+                          )}
+                          <div className="text-xs text-gray-500 mb-1">Body:</div>
+                          <textarea readOnly className="form-input w-full h-32 text-xs bg-gray-50" value={n.template} />
                         </div>
                       )}
                     </td>
