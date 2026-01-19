@@ -58,6 +58,10 @@ router.post('/', async (req, res) => {
     if (!action || !template) {
       return res.status(400).json({ success: false, message: 'Action and template are required' });
     }
+
+    if (!subject) {
+      return res.status(400).json({ success: false, message: 'Subject is required' });
+    }
     
     const newTemplate = await prisma.notificationTemplate.create({
       data: {

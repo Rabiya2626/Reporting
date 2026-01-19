@@ -279,6 +279,13 @@ class OTPService {
 
       const recipientName = user?.name || email.split('@')[0];
 
+      // Get company name from site settings for white-labeling
+      const siteSettings = await prisma.siteSettings.findFirst({
+        orderBy: { updatedAt: 'desc' },
+        select: { siteTitle: true }
+      });
+      const companyName = siteSettings?.siteTitle || 'Reporting Dashboard';
+
       // Get template from database
       const actionMap = {
         'login': 'otp_login',
@@ -301,6 +308,7 @@ class OTPService {
           otp_code: code,
           validity_minutes: validityMinutes,
           purpose: purpose.replace(/_/g, ' '),
+          company_name: companyName,
           timestamp: new Date().toLocaleString('en-US', {
             timeZone: 'America/Los_Angeles',
             dateStyle: 'medium',
@@ -318,8 +326,8 @@ class OTPService {
           htmlBody = htmlBody.replace(regex, value);
         }
       } else {
-        // Fallback template
-        subject = `Your OTP Code - ${purpose.replace(/_/g, ' ')}`;
+        // Fallback template with dynamic company name
+        subject = `Your OTP Code from ${companyName}`;
         htmlBody = `
           <div style="text-align: center; padding: 0 20px;">
             
@@ -330,7 +338,7 @@ class OTPService {
             
             <!-- Message -->
             <p style="margin: 0 0 32px 0; font-size: 15px; color: #6b7280; line-height: 1.6;">
-              You requested a one-time password for <strong>${purpose.replace(/_/g, ' ')}</strong>.
+              You requested a one-time password from <strong>${companyName}</strong> for <strong>${purpose.replace(/_/g, ' ')}</strong>.
               <br>Use the code below to proceed:
             </p>
             
@@ -368,7 +376,7 @@ class OTPService {
             
             <!-- Help Text -->
             <p style="margin: 24px 0 0 0; font-size: 13px; color: #9ca3af; line-height: 1.5;">
-              Having trouble? Contact our support team for assistance.
+              Having trouble? Contact ${companyName} support team for assistance.
             </p>
             
           </div>
