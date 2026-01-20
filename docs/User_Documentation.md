@@ -930,17 +930,6 @@ If you encounter issues:
 
 ---
 
-## Keyboard Shortcuts
-
-| Shortcut | Action |
-|----------|--------|
-| `Ctrl/Cmd + K` | Open search |
-| `Ctrl/Cmd + /` | Toggle dark mode (if available) |
-| `Esc` | Close modals/dialogs |
-| `?` | Show help (on some pages) |
-
----
-
 ## Glossary
 
 | Term | Definition |
