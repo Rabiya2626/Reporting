@@ -97,7 +97,7 @@ const Clients = () => {
                 if (dropCowboyClientNames.has(client.name)) {
                     client.services.push('dropcowboy');
                 }
-                
+
                 // Prefer assignments linked by main client id (more reliable), fallback to name matching
                 let assignments = null;
                 if (client.clientId) {
@@ -522,7 +522,8 @@ const Clients = () => {
                                                                 <div key={a.id || a.user?.id} className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                                                                     <span className={`inline-flex items-center gap-2 px-2 py-1 rounded-md text-sm ${badgeClass}`}>
                                                                         <span className="font-medium">
-                                                                            {a.user?.name || a.userName || "Unknown"}
+                                                                            {((a.user?.name || a.userName || "Unknown") ?? "")
+                                                                                .replace(/^\w/, c => c.toUpperCase())}
                                                                         </span>
                                                                         <span className="text-xs px-1.5 py-0.5 rounded bg-opacity-50">
                                                                             {roleLabel}
@@ -702,11 +703,12 @@ const Clients = () => {
                                             <span className="inline-flex items-center gap-2 bg-purple-100 text-purple-800 px-3 py-2 rounded-lg border border-purple-200">
                                                 <span className="text-xs font-semibold bg-purple-600 text-white px-1.5 py-0.5 rounded">Manager</span>
                                                 <span className="font-medium">
-                                                    {managers.find(m => m.id === parseInt(assignData.managerId))?.name || 'Selected'}
+                                                    {((managers.find(m => m.id === parseInt(assignData.managerId))?.name || 'Selected')
+                                                        .replace(/\b\w/g, c => c.toUpperCase()))}
                                                 </span>
-                                                <button 
-                                                    type="button" 
-                                                    onClick={() => setAssignData({ ...assignData, managerId: "" })} 
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setAssignData({ ...assignData, managerId: "" })}
                                                     className="text-purple-600 hover:text-purple-800 ml-1"
                                                 >
                                                     ✕
@@ -726,7 +728,7 @@ const Clients = () => {
                                             <option value="">(Optional) Select Manager</option>
                                             {getManagers().map((manager) => (
                                                 <option key={manager.id} value={manager.id}>
-                                                    {manager.name} ({manager.email})
+                                                    {(manager.name ?? "Unknown").replace(/\b\w/g, c => c.toUpperCase())} ({manager.email})
                                                 </option>
                                             ))}
                                         </select>
@@ -749,7 +751,7 @@ const Clients = () => {
                                             return (
                                                 <span key={uid} className="inline-flex items-center gap-2 bg-blue-50 text-blue-800 px-3 py-2 rounded-lg border border-blue-200">
                                                     <span className="text-xs font-semibold bg-blue-600 text-white px-1.5 py-0.5 rounded">Employee</span>
-                                                    <span className="font-medium">{emp.name}</span>
+                                                    <span className="font-medium">{(emp.name ?? "Unknown").replace(/\b\w/g, c => c.toUpperCase())}</span>
                                                     <button type="button" onClick={() => setAssignData({ ...assignData, userIds: assignData.userIds.filter(i => i !== uid) })} className="text-blue-600 hover:text-blue-800 ml-1">✕</button>
                                                 </span>
                                             );
@@ -774,7 +776,7 @@ const Clients = () => {
                                             : getEmployeesForSuperadminOrAdmin()
                                         ).map((emp) => (
                                             <option key={emp.id} value={emp.id}>
-                                                {emp.name} ({emp.email})
+                                                {(emp.name ?? "Unknown").replace(/\b\w/g, c => c.toUpperCase())} ({emp.email})
                                             </option>
                                         ))}
                                     </select>
