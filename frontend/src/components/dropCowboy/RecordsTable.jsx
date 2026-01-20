@@ -10,6 +10,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { useAuth } from "../../contexts/AuthContext";
+import { hasFullAccess } from "../../utils/permissions";
 
 // Backend API base URL - uses relative path for same-origin requests
 const API_BASE_URL = import.meta.env.VITE_API_URL || "";
@@ -527,8 +528,8 @@ const RecordsTable = ({ campaigns }) => {
           </div>
         </div>
 
-        {/* Total Campaign Cost - Only visible to superadmin */}
-        {user && user.role === "superadmin" && (
+        {/* Total Campaign Cost - Only visible to users with Full System Access */}
+        {hasFullAccess(user) && (
           <div className="mt-4 bg-white rounded-lg p-4 shadow-sm border border-blue-200 hover:shadow-md transition-shadow">
             <div className="flex items-center justify-between">
               <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
