@@ -20,6 +20,7 @@ This document outlines detailed enhancements and issues identified across the pr
 | 9 | Clients Page Navigation | UI/UX / Enhancement | 🟧 Medium | ⏳ Pending Review |
 | 10 | Lowercase Names in Assignment | Bug / UI | 🟩 Low | ⏳ Pending Review |
 | 11 | Total Campaign Cost Visibility for Full Access Roles | Bug / Permission / Data Accuracy | 🟥 High | ⏳ Pending Review |
+| 12 | Access Restriction for Services.jsx Page | Bug / Permission | 🟥 High | ⏳ Pending Review |
 
 ---
 
@@ -56,7 +57,7 @@ API endpoints for client data retrieval
 Reports are consuming excessive database space due to unoptimized storage formats or redundant entries.  
 
 **Current Behavior:**  
-Full reports objects are being stored in the database without optimization, leading to inflated database size.  
+Full report objects are being stored in the database without optimization, leading to inflated database size.  
 
 **Expected Behavior / Proposed Solution:**  
 Optimize report storage by normalizing tables, introducing cleanup jobs, or compressing archived data. Consider adding retention policies.  
@@ -76,7 +77,7 @@ Backend storage schema, data migration scripts
 **Status:** ⏳ Pending Review  
 
 **Description:**  
-Filtering of action items on the Activities page is not working as expected for the options “Project Created,” “Project Updated,” “Project Deleted” and "Status Changed".  
+Filtering of action items on the Activities page is not working as expected for the options “Project Created,” “Project Updated,” “Project Deleted,” and “Status Changed.”  
 
 **Steps to Reproduce:**  
 1. Navigate to Activities page.  
@@ -211,10 +212,10 @@ Improve navigation using breadcrumb trails or collapsible tree views to clarify 
 
 **Affected Modules:**  
 - `Clients.jsx`  
-- `ClientServicesSection.jsx`
-- `MauticCampaignsSection.jsx`
-- `MauticEmailsSection.jsx`
-- `ClientsDropCowboyDashboard.jsx`
+- `ClientServicesSection.jsx`  
+- `MauticCampaignsSection.jsx`  
+- `MauticEmailsSection.jsx`  
+- `ClientsDropCowboyDashboard.jsx`  
 
 ---
 
@@ -250,11 +251,38 @@ Visibility is currently hardcoded to `"superadmin"` only.
 Update logic to include all roles with `"fullAccess": true"` in the permission check.  
 
 **Affected Modules:**  
-- `RecordsTable.jsx`
-- `MetricsCards.jsx`
+- `RecordsTable.jsx`  
+- `MetricsCards.jsx`  
 - Role-based access logic  
 
 **Dependencies:**  
 User role definitions and permissions system  
+
+---
+
+### **12. Access Restriction for Services.jsx Page**
+**Type:** Bug / Permission  
+**Impact:** 🟥 High  
+**Status:** ⏳ Pending Review  
+
+**Description:**  
+In the `Services.jsx` page, users with any role can currently view all clients and campaigns — even when no clients are assigned to them.  
+This page does not follow the same access restrictions as `Clients.jsx`, where users only see their assigned clients (unless they have Full System Access).  
+
+**Steps to Reproduce:**  
+1. Login with a non-admin user who has limited access.  
+2. Open the Services page.  
+3. Observe that all clients and campaigns are visible.  
+
+**Expected Behavior:**  
+Restrict visibility so that:  
+- Regular users can view only the clients and campaigns assigned to them.  
+- Users with `"fullAccess": true"` can view all.  
+
+**Affected Modules:**  
+- `Services.jsx`
+
+**Dependencies:**  
+User role permissions and assigned clients mapping  
 
 ---
