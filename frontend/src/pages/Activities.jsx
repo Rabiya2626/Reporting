@@ -73,15 +73,8 @@ const Activities = () => {
     const getActionColor = (action) => {
         switch (action) {
             case 'user_created':
-            case 'project_created':
-                return 'text-green-600 bg-green-100';
             case 'user_updated':
-            case 'project_updated':
-            case 'project_status_changed':
-                return 'text-blue-600 bg-blue-100';
             case 'user_deleted':
-            case 'project_deleted':
-                return 'text-red-600 bg-red-100';
             case 'login':
                 return 'text-purple-600 bg-purple-100';
             case 'logout':
@@ -160,10 +153,6 @@ const Activities = () => {
                             <option value="user_created">User Created</option>
                             <option value="user_updated">User Updated</option>
                             <option value="user_deleted">User Deleted</option>
-                            <option value="project_created">Project Created</option>
-                            <option value="project_updated">Project Updated</option>
-                            <option value="project_deleted">Project Deleted</option>
-                            <option value="project_status_changed">Status Changed</option>
                             <option value="login">Login</option>
                             <option value="logout">Logout</option>
                         </select>
