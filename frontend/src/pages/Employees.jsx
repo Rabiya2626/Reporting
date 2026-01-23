@@ -268,7 +268,7 @@ const Employees = () => {
           ))}
 
           <input
-            className="form-input flex-1 min-w-[120px]"
+            className="flex-1 min-w-[120px] border-none focus:outline-none bg-transparent"
             value={query}
             onChange={(e) => { setQuery(e.target.value); setOpen(true) }}
             onFocus={() => setOpen(true)}
