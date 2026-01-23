@@ -272,6 +272,13 @@ const Employees = () => {
             value={query}
             onChange={(e) => { setQuery(e.target.value); setOpen(true) }}
             onFocus={() => setOpen(true)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                e.stopPropagation();
+                setOpen(false);
+                e.target.blur();
+              }
+            }}
             placeholder={selected.length === 0 ? 'Search managers...' : 'Add manager...'}
             aria-label="Search managers"
           />
