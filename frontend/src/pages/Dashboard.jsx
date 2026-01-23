@@ -633,7 +633,7 @@ const Dashboard = () => {
             <QuickActionButton 
               icon={Users} 
               label="Manage Users" 
-              onClick={() => navigate('/employees')}
+              onClick={() => navigate('/users')}
             />
             <QuickActionButton 
               icon={Activity} 
