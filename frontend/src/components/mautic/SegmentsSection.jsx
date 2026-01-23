@@ -9,16 +9,19 @@ import { List, Users, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useSegments } from '../../hooks/mautic';
 import { formatNumber, formatDate } from '../../utils/mautic';
 
-export default function SegmentsSection({ clientId, refreshKey }) {
+export default function SegmentsSection({ clientId, refreshKey, accessibleClientIds }) {
   const [page, setPage] = useState(1);
   const [limit] = useState(20);
-  
-  // If clientId is null or undefined, fetch all clients' segments
-  const { segments, pagination, loading, error, refetch } = useSegments({ 
-    clientId: clientId || undefined, 
-    page, 
-    limit 
+
+  const { segments, pagination, loading, error, refetch } = useSegments({
+    clientId: clientId || undefined,
+    page,
+    limit,
+    clientIds: !clientId && accessibleClientIds?.length > 0 ? accessibleClientIds : undefined
   });
+
+  // Backend handles filtering by clientIds, no frontend filtering needed
+  const filteredSegments = segments;
 
   // Reset page when client changes
   useEffect(() => {
@@ -95,8 +98,8 @@ export default function SegmentsSection({ clientId, refreshKey }) {
             </tr>
           </thead>
           <tbody className="bg-white divide-y divide-gray-200">
-            {segments && segments.length > 0 ? (
-              segments.map((segment) => (
+            {filteredSegments && filteredSegments.length > 0 ? (
+              filteredSegments.map((segment) => (
                 <tr key={segment.id} className="hover:bg-gray-50">
                   <td className="px-6 py-4">
                     <div>

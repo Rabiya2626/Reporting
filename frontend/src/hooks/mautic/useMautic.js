@@ -195,7 +195,10 @@ export function useEmails(params = {}) {
         setLoading(true);
         setError(null);
 
-        const result = await mauticService.getEmails(params);
+        const result = await mauticService.getEmails({
+            ...params,
+            clientIds: params.clientIds || params.accessibleClientIds
+        });
 
         if (result.success) {
             setEmails(result.data.emails);
@@ -216,7 +219,7 @@ export function useEmails(params = {}) {
 
 /**
  * Hook for fetching segments with pagination
- * @param {Object} params - { clientId, page, limit }
+ * @param {Object} params - { clientId, page, limit, accessibleClientIds }
  * @returns {Object} { segments, pagination, loading, error, refetch }
  */
 export function useSegments(params = {}) {
@@ -229,24 +232,16 @@ export function useSegments(params = {}) {
         setLoading(true);
         setError(null);
 
-        const result = await mauticService.getSegments(params.clientId);
+        const result = await mauticService.getSegments({
+            clientId: params.clientId,
+            page: params.page || 1,
+            limit: params.limit || 20,
+            clientIds: params.clientIds || params.accessibleClientIds
+        });
 
         if (result.success) {
             setSegments(result.data);
-            // Backend doesn't paginate segments yet, so create mock pagination
-            const total = result.data.length;
-            const page = params.page || 1;
-            const limit = params.limit || 20;
-            const start = (page - 1) * limit;
-            const end = start + limit;
-
-            setSegments(result.data.slice(start, end));
-            setPagination({
-                page,
-                limit,
-                total,
-                totalPages: Math.ceil(total / limit)
-            });
+            setPagination(result.pagination);
         } else {
             setError(result.error);
         }
@@ -279,7 +274,8 @@ export function useCampaigns(params = {}) {
         const result = await mauticService.getCampaigns({
             clientId: params.clientId,
             page: params.page || 1,
-            limit: params.limit || 20
+            limit: params.limit || 20,
+            clientIds: params.clientIds // Pass clientIds for access control filtering
         });
 
         if (result.success) {

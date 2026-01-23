@@ -10,11 +10,11 @@ import { toast } from 'react-toastify';
 import { useDashboardMetrics, useClients, useSync } from '../../hooks/mautic';
 import MetricsCards from './MetricsCards';
 import ClientSelector from './ClientSelector';
-import RealCampaignsSection from './RealCampaignsSection';
-import CampaignsSection from './CampaignsSection'; // This shows Emails
+import CampaignsSection from './CampaignsSection';
+import EmailsSection from './EmailsSection'; // This shows Emails
 import SegmentsSection from './SegmentsSection';
 
-export default function MauticDashboard({ clientId = null, clientName = null }) {
+export default function MauticDashboard({ clientId = null, clientName = null, accessibleClientIds = null }) {
   // If clientId is provided (from ClientDashboard), use it and lock it
   const [selectedClientId, setSelectedClientId] = useState(clientId);
   
@@ -28,6 +28,19 @@ export default function MauticDashboard({ clientId = null, clientName = null }) 
   // Hide client selector if clientId is provided (viewing single client)
   const isClientLocked = clientId !== null;
 
+  // Filter clients by accessible IDs if provided (for access control)
+  // Memoize to prevent re-filtering on every parent render
+  const accessibleClients = React.useMemo(() => {
+    console.log("accessible clients ids", accessibleClientIds);
+    console.log("clients", clients);
+    
+    if (!accessibleClientIds || accessibleClientIds.length === 0) {
+      return clients || [];
+    }
+    console.log("accessible clients", (clients || []).filter(c => accessibleClientIds.includes(c.id)));
+    return (clients || []).filter(c => accessibleClientIds.includes(c.id));
+  }, [clients, accessibleClientIds]);
+
   const handleSync = async () => {
     // Show initial message with client count
     if (selectedClientId) {
@@ -37,7 +50,7 @@ export default function MauticDashboard({ clientId = null, clientName = null }) 
       }
       toast.info('Starting Mautic sync... Please wait.', { autoClose: 3000 });
     } else {
-      const activeClients = clients.filter(c => c.isActive).length;
+      const activeClients = accessibleClients.filter(c => c.isActive).length;
       const estimatedMinutes = Math.ceil(activeClients / 5); // ~5 clients per minute with batching
       const confirmMessage = `This will sync ${activeClients} active client${activeClients !== 1 ? 's' : ''} in parallel batches.\n\nEstimated time: ${estimatedMinutes}-${estimatedMinutes + 2} minutes.\n\nContinue?`;
       if (!window.confirm(confirmMessage)) {
@@ -104,6 +117,17 @@ export default function MauticDashboard({ clientId = null, clientName = null }) 
         </p>
       </div>
 
+      {/* No Accessible Clients Warning */}
+      {accessibleClients.length === 0 && accessibleClientIds && (
+        <div className="mb-6 bg-yellow-50 border border-yellow-200 rounded-lg p-6 text-center">
+          <AlertCircle className="text-yellow-600 mx-auto mb-3" size={48} />
+          <h3 className="text-lg font-semibold text-yellow-900 mb-2">No Accessible Autovation Clients</h3>
+          <p className="text-sm text-yellow-800">
+            You don't have access to any Mautic clients. Contact your administrator for client assignments.
+          </p>
+        </div>
+      )}
+
       {/* No Clients Warning */}
       {clients.length === 0 && (
         <div className="mb-6 bg-yellow-50 border border-yellow-200 rounded-lg p-6 text-center">
@@ -129,7 +153,7 @@ export default function MauticDashboard({ clientId = null, clientName = null }) 
         <div className="flex items-center gap-4">
           {!isClientLocked && (
             <ClientSelector
-              clients={clients}
+              clients={accessibleClientIds ? accessibleClients : clients}
               selectedClientId={selectedClientId}
               onChange={handleClientChange}
             />
@@ -152,12 +176,10 @@ export default function MauticDashboard({ clientId = null, clientName = null }) 
         </button>
       </div>
 
-      {/* Clients management removed from dashboard (moved to Settings) */}
-
       {/* Metrics Cards - Show for selected client OR all clients */}
       {metrics && clients.length > 0 && (
         <>
-          <MetricsCards metrics={metrics} />
+          <MetricsCards metrics={metrics} accessibleClients={accessibleClients} selectedClientId={selectedClientId} />
 
           {/* Tabs Navigation */}
           <div className="bg-white rounded-lg shadow-sm mb-6 mt-6">
@@ -210,14 +232,12 @@ export default function MauticDashboard({ clientId = null, clientName = null }) 
 
           {/* Tab Content */}
           <div className="bg-white rounded-lg shadow-sm p-6">
-            {activeTab === 'campaigns' && <RealCampaignsSection clientId={selectedClientId} refreshKey={refreshKey} />}
-            {activeTab === 'emails' && <CampaignsSection clientId={selectedClientId} refreshKey={refreshKey} />}
-            {activeTab === 'segments' && <SegmentsSection clientId={selectedClientId} refreshKey={refreshKey} />}
+            {activeTab === 'campaigns' && <CampaignsSection clientId={selectedClientId} refreshKey={refreshKey} accessibleClientIds={accessibleClients.map(c => c.id)} />}
+            {activeTab === 'emails' && <EmailsSection clientId={selectedClientId} refreshKey={refreshKey} accessibleClientIds={accessibleClients.map(c => c.id)} />}
+            {activeTab === 'segments' && <SegmentsSection clientId={selectedClientId} refreshKey={refreshKey} accessibleClientIds={accessibleClients.map(c => c.id)} />}
           </div>
         </>
       )}
-
-      {/* Client add/edit moved to Settings */}
     </div>
   );
 }
