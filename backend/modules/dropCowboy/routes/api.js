@@ -257,12 +257,14 @@ router.get("/records", async (req, res) => {
     const client = req.query.client;
     const startDate = req.query.startDate;
     const endDate = req.query.endDate;
+    const clientIds = req.query.clientIds ? req.query.clientIds.split(',').map(id => parseInt(id)).filter(id => !isNaN(id)) : null;
 
     const offset = (page - 1) * limit;
 
     const filters = {
       q: search,
       client,
+      clientIds,
       status,
       startDate,
       endDate,

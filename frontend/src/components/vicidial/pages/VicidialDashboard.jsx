@@ -7,7 +7,7 @@ import AgentCampaignsPanel from '../components/AgentCampaignsPanel';
 import AgentStatsPanel from '../components/AgentStatsPanel';
 import { toast } from 'react-toastify';
 
-export default function VicidialDashboard(){
+export default function VicidialDashboard({ accessibleClientIds = null }) {
   const [agents, setAgents] = useState([]);
   const [filteredAgents, setFilteredAgents] = useState([]);
   const [loading, setLoading] = useState(true);

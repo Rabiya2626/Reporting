@@ -1264,12 +1264,19 @@ router.get("/emails/:emailId/stats", async (req, res) => {
  */
 router.get("/emails", async (req, res) => {
   try {
-    const { clientId, page = 1, limit = 50 } = req.query;
+    const { clientId, clientIds, page = 1, limit = 50 } = req.query;
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
     const where = {};
-    if (clientId) where.clientId = parseInt(clientId);
+    if (clientId) {
+      where.clientId = parseInt(clientId);
+    } else if (clientIds) {
+      const ids = clientIds.split(',').map(id => parseInt(id)).filter(id => !isNaN(id));
+      if (ids.length > 0) {
+        where.clientId = { in: ids };
+      }
+    }
 
     const [emails, total] = await Promise.all([
       prisma.mauticEmail.findMany({
@@ -1314,29 +1321,51 @@ router.get("/emails", async (req, res) => {
  */
 router.get("/segments", async (req, res) => {
   try {
-    const { clientId } = req.query;
+    const { clientId, clientIds, page = 1, limit = 50 } = req.query;
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
 
     const where = {};
-    if (clientId) where.clientId = parseInt(clientId);
+    if (clientId) {
+      where.clientId = parseInt(clientId);
+    } else if (clientIds) {
+      const ids = clientIds.split(',').map(id => parseInt(id)).filter(id => !isNaN(id));
+      if (ids.length > 0) {
+        where.clientId = { in: ids };
+      }
+    }
 
-    const segments = await prisma.mauticSegment.findMany({
-      where,
-      orderBy: { contactCount: "desc" },
-      include: {
-        client: {
-          select: { name: true },
+    const [segments, total] = await Promise.all([
+      prisma.mauticSegment.findMany({
+        where,
+        skip,
+        take: parseInt(limit),
+        orderBy: { contactCount: "desc" },
+        include: {
+          client: {
+            select: { name: true },
+          },
         },
-      },
-    });
+      }),
+      prisma.mauticSegment.count({ where }),
+    ]);
 
     // Calculate total contacts across all segments
     const totalContacts = segments.reduce((sum, segment) => sum + (segment.contactCount || 0), 0);
 
     res.json({
       success: true,
-      data: segments,
-      totalContacts: totalContacts,
-      segmentCount: segments.length
+      data: {
+        segments,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          totalPages: Math.ceil(total / parseInt(limit)),
+        },
+        totalContacts: totalContacts,
+        segmentCount: segments.length
+      }
     });
   } catch (error) {
     logger.error("Error fetching segments:", error);
@@ -1354,12 +1383,20 @@ router.get("/segments", async (req, res) => {
  */
 router.get("/campaigns", async (req, res) => {
   try {
-    const { clientId, page = 1, limit = 50 } = req.query;
+    const { clientId, clientIds, page = 1, limit = 50 } = req.query;
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
     const where = {};
-    if (clientId) where.clientId = parseInt(clientId);
+    if (clientId) {
+      where.clientId = parseInt(clientId);
+    } else if (clientIds) {
+      // Parse comma-separated clientIds for access control filtering
+      const ids = clientIds.split(',').map(id => parseInt(id)).filter(id => !isNaN(id));
+      if (ids.length > 0) {
+        where.clientId = { in: ids };
+      }
+    }
 
     const [campaigns, total] = await Promise.all([
       prisma.mauticCampaign.findMany({

@@ -712,6 +712,17 @@ class DataService {
         }
       }
 
+      // Apply clientIds filter (for access control - multiple clients)
+      if (filters.clientIds && filters.clientIds.length > 0) {
+        const clientCampaigns = await prisma.dropCowboyCampaign.findMany({
+          where: { clientId: { in: filters.clientIds } },
+          select: { campaignId: true },
+        });
+
+        const clientCampaignIds = clientCampaigns.map((c) => c.campaignId);
+        where.campaignId = { in: clientCampaignIds };
+      }
+
       // Status filter
       if (filters.status && filters.status !== "all") {
         const status = filters.status.toLowerCase();
@@ -766,7 +777,7 @@ class DataService {
       }
 
       // Calculate filtered metrics for voicemail campaign records
-      const [successCount, failedCount, costAggregates] = await Promise.all([
+      const [successCount, failedCount, otherStatusCount, costAggregates] = await Promise.all([
         // Count successful deliveries
         prisma.dropCowboyCampaignRecord.count({
           where: {
@@ -792,6 +803,28 @@ class DataService {
             },
           },
         }),
+        // Count other statuses
+        prisma.dropCowboyCampaignRecord.count({
+          where: {
+            ...where,
+            status: {
+              notIn: [
+                "sent",
+                "success",
+                "delivered",
+                "failed",
+                "failure",
+                "error",
+                "SENT",
+                "SUCCESS",
+                "DELIVERED",
+                "FAILED",
+                "FAILURE",
+                "ERROR",
+              ],
+            },
+          },
+        }),
         // Calculate total cost
         prisma.dropCowboyCampaignRecord.aggregate({
           where,
@@ -803,7 +836,7 @@ class DataService {
         }),
       ]);
 
-      const otherStatus = total - successCount - failedCount;
+      // const otherStatus = total - successCount - failedCount;
       const totalCost =
         parseFloat(costAggregates._sum.cost || 0) +
         parseFloat(costAggregates._sum.complianceFee || 0) +
@@ -815,7 +848,7 @@ class DataService {
       const failureRate =
         total > 0 ? ((failedCount / total) * 100).toFixed(1) : 0;
       const otherStatusRate =
-        total > 0 ? ((otherStatus / total) * 100).toFixed(1) : 0;
+        total > 0 ? ((otherStatusCount / total) * 100).toFixed(1) : 0;
 
       // Get paginated records
       const limit = filters.limit ? parseInt(filters.limit) : 50;
@@ -831,6 +864,7 @@ class DataService {
             include: {
               client: {
                 select: {
+                  id: true,
                   name: true,
                 },
               },
@@ -847,7 +881,7 @@ class DataService {
           deliveryRate: parseFloat(deliveryRate),
           failedDeliveries: failedCount,
           failureRate: parseFloat(failureRate),
-          otherStatus: otherStatus,
+          otherStatus: otherStatusCount,
           otherStatusRate: parseFloat(otherStatusRate),
           totalCampaignCost: parseFloat(totalCost.toFixed(4)),
         },
@@ -855,6 +889,7 @@ class DataService {
           campaignName: r.campaignName,
           campaignId: r.campaignId,
           client: r.campaign?.client?.name || null,
+          clientId: r.campaign?.client?.id || null,
           phoneNumber: r.phoneNumber,
           carrier: r.carrier,
           lineType: r.lineType,

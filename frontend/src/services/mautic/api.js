@@ -57,14 +57,14 @@ export const fetchDashboardMetrics = (clientId = null) =>
 export const fetchContacts = (params = {}) =>
   mauticAPI.get("/contacts", { params });
 
-export const fetchEmails = (params = {}) =>
-  mauticAPI.get("/emails", { params });
+export const fetchEmails = ({ clientId, page = 1, limit = 50, clientIds }) =>
+  mauticAPI.get("/emails", { params: { clientId, page, limit, ...(clientIds && { clientIds: clientIds.join(',') }) } });
 
-export const fetchSegments = (clientId) =>
-  mauticAPI.get("/segments", { params: { clientId } });
+export const fetchSegments = ({ clientId, page = 1, limit = 50, clientIds }) =>
+  mauticAPI.get("/segments", { params: { clientId, page, limit, ...(clientIds && { clientIds: clientIds.join(',') }) } });
 
-export const fetchCampaigns = ({ clientId, page = 1, limit = 50 }) =>
-  mauticAPI.get("/campaigns", { params: { clientId, page, limit } });
+export const fetchCampaigns = ({ clientId, page = 1, limit = 50, clientIds }) =>
+  mauticAPI.get("/campaigns", { params: { clientId, page, limit, ...(clientIds && { clientIds: clientIds.join(',') }) } });
 
 // ============================================
 // SYNC OPERATIONS

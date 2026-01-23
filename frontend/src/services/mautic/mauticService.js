@@ -208,7 +208,7 @@ class MauticService {
 
   /**
    * Get emails with pagination
-   * @param {Object} params - { clientId, page, limit }
+   * @param {Object} params - { clientId, page, limit, clientIds }
    * @returns {Promise<Object>} Emails data
    */
   async getEmails(params = {}) {
@@ -231,15 +231,16 @@ class MauticService {
 
   /**
    * Get segments
-   * @param {number|null} clientId - Client ID (optional)
+   * @param {Object} params - { clientId, page, limit, clientIds }
    * @returns {Promise<Object>} Segments data
    */
-  async getSegments(clientId = null) {
+  async getSegments(params = {}) {
     try {
-      const response = await apiFetchSegments(clientId);
+      const response = await apiFetchSegments(params);
       return {
         success: true,
-        data: response.data.data,
+        data: response.data.data.segments,
+        pagination: response.data.data.pagination,
         error: null
       };
     } catch (error) {
@@ -247,6 +248,7 @@ class MauticService {
       return {
         success: false,
         data: null,
+        pagination: null,
         error: error.response?.data?.message || error.message || 'Failed to fetch segments'
       };
     }
