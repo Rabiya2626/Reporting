@@ -397,10 +397,31 @@ class DataService {
             },
           });
 
+          const otherStatusCount = await prisma.dropCowboyCampaignRecord.count({
+            where: {
+              ...recordWhere,
+              status: {
+                notIn: [
+                  "sent",
+                  "success",
+                  "delivered",
+                  "failed",
+                  "failure",
+                  "error",
+                  "SENT",
+                  "SUCCESS",
+                  "DELIVERED",
+                  "FAILED",
+                  "FAILURE",
+                  "ERROR"
+                ],
+              },
+            },
+          });
+
           const successfulDeliveries = successCount;
           const failedSends = failureCount;
-          const otherStatus = totalSent - successfulDeliveries - failedSends;
-
+          const otherStatus = otherStatusCount;
           const totalCost =
             parseFloat(metricsAgg._sum.cost || 0) +
             parseFloat(metricsAgg._sum.complianceFee || 0) +
@@ -538,6 +559,28 @@ class DataService {
         },
       });
 
+      const otherStatusCount = await prisma.dropCowboyCampaignRecord.count({
+        where: {
+          ...recordWhereClause,
+          status: {
+            notIn: [
+              "sent",
+              "success",
+              "delivered",
+              "failed",
+              "failure",
+              "error",
+              "SENT",
+              "SUCCESS",
+              "DELIVERED",
+              "FAILED",
+              "FAILURE",
+              "ERROR"
+            ],
+          },
+        },
+      });
+
       const averageSuccessRate =
         totalSent > 0 ? ((successCount / totalSent) * 100).toFixed(2) : 0;
 
@@ -546,7 +589,6 @@ class DataService {
         where: { status: "success" },
         orderBy: { syncCompletedAt: "desc" },
       });
-
       return {
         campaigns: campaignsWithDetails,
         overall: {
@@ -554,7 +596,7 @@ class DataService {
           totalSent,
           successfulDeliveries: successCount,
           failedSends: failureCount,
-          otherStatus: totalSent - successCount - failureCount,
+          otherStatus: otherStatusCount,
           totalCost: parseFloat(totalCost.toFixed(4)),
           averageSuccessRate: parseFloat(averageSuccessRate),
         },
@@ -766,7 +808,7 @@ class DataService {
       }
 
       // Calculate filtered metrics for voicemail campaign records
-      const [successCount, failedCount, costAggregates] = await Promise.all([
+      const [successCount, failedCount, otherStatusCount, costAggregates] = await Promise.all([
         // Count successful deliveries
         prisma.dropCowboyCampaignRecord.count({
           where: {
@@ -792,6 +834,28 @@ class DataService {
             },
           },
         }),
+        // Count other statuses
+        prisma.dropCowboyCampaignRecord.count({
+          where: {
+            ...where,
+            status: {
+              notIn: [
+                "sent",
+                "success",
+                "delivered",
+                "failed",
+                "failure",
+                "error",
+                "SENT",
+                "SUCCESS",
+                "DELIVERED",
+                "FAILED",
+                "FAILURE",
+                "ERROR",
+              ],
+            },
+          },
+        }),
         // Calculate total cost
         prisma.dropCowboyCampaignRecord.aggregate({
           where,
@@ -803,7 +867,7 @@ class DataService {
         }),
       ]);
 
-      const otherStatus = total - successCount - failedCount;
+      const otherStatus = otherStatusCount;
       const totalCost =
         parseFloat(costAggregates._sum.cost || 0) +
         parseFloat(costAggregates._sum.complianceFee || 0) +
