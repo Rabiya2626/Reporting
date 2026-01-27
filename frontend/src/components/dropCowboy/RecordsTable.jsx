@@ -10,11 +10,12 @@ import {
   Loader2,
 } from "lucide-react";
 import { useAuth } from "../../contexts/AuthContext";
+import { hasFullAccess } from "../../utils/permissions";
 
 // Backend API base URL - uses relative path for same-origin requests
 const API_BASE_URL = import.meta.env.VITE_API_URL || "";
 
-const RecordsTable = ({ campaigns }) => {
+const RecordsTable = ({ campaigns, accessibleClientIds = [] }) => {
   const { user } = useAuth();
   const [serverRecords, setServerRecords] = useState([]);
   const [totalRecords, setTotalRecords] = useState(0);
@@ -172,7 +173,7 @@ const RecordsTable = ({ campaigns }) => {
           } else {
             container.scrollTo({ top: 0, behavior: "smooth" });
           }
-        } catch (e) {}
+        } catch (e) { }
       }
     }, 60);
     return () => clearTimeout(t);
@@ -241,7 +242,7 @@ const RecordsTable = ({ campaigns }) => {
     setGotoInvalid(false);
     try {
       window.localStorage.setItem("dc_records_page", String(page));
-    } catch (e) {}
+    } catch (e) { }
   };
 
   // Clear invalid state when input changes
@@ -253,17 +254,40 @@ const RecordsTable = ({ campaigns }) => {
   useEffect(() => {
     try {
       window.localStorage.setItem("dc_records_page", String(currentPage));
-    } catch (e) {}
+    } catch (e) { }
   }, [currentPage]);
 
   // Fetch a page of records from backend
   async function fetchPage(page = 1) {
+    if (accessibleClientIds.length === 0) {
+      // No access → show empty data & reset stats
+      setServerRecords([]);
+      setTotalRecords(0);
+      setMetrics({
+        totalVoicemailsSent: 0,
+        successfulDeliveries: 0,
+        deliveryRate: 0,
+        failedDeliveries: 0,
+        failureRate: 0,
+        otherStatus: 0,
+        otherStatusRate: 0,
+        totalCampaignCost: 0,
+      });
+      return;
+    }
+
     setLoadingPage(true);
     const limit = recordsPerPage;
     const params = new URLSearchParams();
     params.set("limit", String(limit));
     // Use page-based pagination (backend expects page + limit)
     params.set("page", String(page));
+
+    // 👇 Add client access control
+    if (accessibleClientIds.length > 0) {
+      params.set("clientIds", accessibleClientIds.join(","));
+    }
+
     if (clientFilter && clientFilter !== "all")
       params.set("client", clientFilter);
     if (dateFilters.startDate) params.set("startDate", dateFilters.startDate);
@@ -288,7 +312,7 @@ const RecordsTable = ({ campaigns }) => {
             ? json.data.pagination.totalRecords || rows.length
             : rows.length;
 
-        // Extract metrics from response
+        // Extract metrics from response (already calculated by backend for ALL filtered records)
         if (json.data && json.data.metrics) {
           setMetrics(json.data.metrics);
         }
@@ -298,6 +322,7 @@ const RecordsTable = ({ campaigns }) => {
           return {
             campaignName: r.campaignName || "",
             client: r.client || "Unknown",
+            clientId: r.clientId || r.client_id || null,
             phoneNumber:
               r.phoneNumber || r.phone_number || r.phone || r.phone_num || "",
             firstName: r.firstName || r.first_name || r.first || "",
@@ -309,8 +334,13 @@ const RecordsTable = ({ campaigns }) => {
           };
         });
 
+        console.log("🔍 Sample record:", rows[0]);
+        console.log("accessibleClientIds:", accessibleClientIds);
+
+        // ✅ Backend already filtered by clientIds and calculated metrics for ALL records
+        // Use backend's total for proper pagination
         setServerRecords(normalized);
-        setTotalRecords(total || 0);
+        setTotalRecords(total);
         setCurrentPage(page);
       } else {
         console.error("Failed to fetch records:", json.error);
@@ -527,8 +557,8 @@ const RecordsTable = ({ campaigns }) => {
           </div>
         </div>
 
-        {/* Total Campaign Cost - Only visible to superadmin */}
-        {user && user.role === "superadmin" && (
+        {/* Total Campaign Cost - Only visible to users with Full System Access */}
+        {hasFullAccess(user) && (
           <div className="mt-4 bg-white rounded-lg p-4 shadow-sm border border-blue-200 hover:shadow-md transition-shadow">
             <div className="flex items-center justify-between">
               <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
@@ -604,9 +634,8 @@ const RecordsTable = ({ campaigns }) => {
               currentRecords.map((record, index) => (
                 <tr
                   key={index}
-                  className={`hover:bg-blue-50/50 transition-all duration-200 ${
-                    fadeIn ? "opacity-100" : "opacity-0"
-                  } border-b border-gray-100 last:border-0`}
+                  className={`hover:bg-blue-50/50 transition-all duration-200 ${fadeIn ? "opacity-100" : "opacity-0"
+                    } border-b border-gray-100 last:border-0`}
                 >
                   <td className="sticky left-0 bg-white hover:bg-blue-50/50 px-3 py-3 border-r border-gray-100 z-10">
                     <div className="flex items-center gap-1.5">
@@ -653,9 +682,9 @@ const RecordsTable = ({ campaigns }) => {
                       <span className="font-medium">
                         {record.date
                           ? new Date(record.date).toLocaleDateString("en-US", {
-                              month: "short",
-                              day: "numeric",
-                            })
+                            month: "short",
+                            day: "numeric",
+                          })
                           : "-"}
                       </span>
                     </div>
@@ -766,11 +795,10 @@ const RecordsTable = ({ campaigns }) => {
                     if (e.key === "Enter") handleGoto();
                   }}
                   placeholder="Page #"
-                  className={`w-20 px-3 py-2 rounded-lg text-sm font-medium border focus:ring-2 focus:ring-blue-500 ${
-                    gotoInvalid
-                      ? "border-red-500 ring-1 ring-red-300"
-                      : "border-gray-300"
-                  }`}
+                  className={`w-20 px-3 py-2 rounded-lg text-sm font-medium border focus:ring-2 focus:ring-blue-500 ${gotoInvalid
+                    ? "border-red-500 ring-1 ring-red-300"
+                    : "border-gray-300"
+                    }`}
                 />
                 <button
                   onClick={handleGoto}

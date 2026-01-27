@@ -237,6 +237,72 @@ const Employees = () => {
     setIsSubmitting(false)
   }
 
+  // Tag-style manager multi-select with per-manager remove (no Clear-all)
+  const ManagerMultiSelect = ({ availableManagers, selectedIds, onChange, editingUser }) => {
+    const [open, setOpen] = useState(false)
+    const [query, setQuery] = useState('')
+
+    const selected = selectedIds.map(id => availableManagers.find(m => m.id === id)).filter(Boolean)
+
+    const options = availableManagers.filter(m =>
+      (!editingUser || m.id !== editingUser.id) &&
+      !selectedIds.includes(m.id) &&
+      (m.name.toLowerCase().includes(query.toLowerCase()) || (m.customRole?.name || m.role).toLowerCase().includes(query.toLowerCase()))
+    )
+
+    return (
+      <div className="relative">
+        <div className="border rounded p-2 min-h-[56px] flex items-center gap-2 flex-wrap">
+          {selected.map(m => (
+            <span key={m.id} className="inline-flex items-center bg-gray-100 px-2 py-1 rounded text-sm">
+              <span className="mr-2">{m.name} ({m.customRole?.name || m.role})</span>
+              <button
+                type="button"
+                onClick={() => onChange(selectedIds.filter(id => id !== m.id))}
+                className="text-gray-500 hover:text-gray-700"
+                aria-label={`Remove ${m.name}`}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+
+          <input
+            className="flex-1 min-w-[120px] border-none focus:outline-none bg-transparent"
+            value={query}
+            onChange={(e) => { setQuery(e.target.value); setOpen(true) }}
+            onFocus={() => setOpen(true)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                e.stopPropagation();
+                setOpen(false);
+                e.target.blur();
+              }
+            }}
+            placeholder={selected.length === 0 ? 'Search managers...' : 'Add manager...'}
+            aria-label="Search managers"
+          />
+        </div>
+
+        {open && options.length > 0 && (
+          <ul className="absolute z-50 mt-1 w-full bg-white border rounded max-h-48 overflow-auto">
+            {options.map(m => (
+              <li key={m.id}>
+                <button
+                  type="button"
+                  onClick={() => { onChange([...selectedIds, m.id]); setQuery(''); setOpen(false) }}
+                  className="w-full text-left px-3 py-2 hover:bg-gray-100"
+                >
+                  {m.name} ({m.customRole?.name || m.role})
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    )
+  }
+
   // Get display badge class for role - used for styling only
   const getRoleBadgeClass = (employee) => {
     // Use customRole name if available, otherwise fall back to base role
@@ -537,25 +603,14 @@ const Employees = () => {
                       <Users size={14} className="text-purple-600" />
                       Assign Manager(s)
                     </label>
-                    <select
-                      multiple
-                      value={formData.managerIds.map(String)}
-                      onChange={(e) => {
-                        const selected = Array.from(e.target.selectedOptions, option => parseInt(option.value));
-                        setFormData({ ...formData, managerIds: selected });
-                      }}
-                      className="form-select h-24"
-                    >
-                      {availableManagers
-                        .filter(m => !editingUser || m.id !== editingUser.id)
-                        .map((manager) => (
-                          <option key={manager.id} value={manager.id}>
-                            {manager.name} ({manager.customRole?.name || manager.role})
-                          </option>
-                        ))}
-                    </select>
+                    <ManagerMultiSelect
+                      availableManagers={availableManagers}
+                      selectedIds={formData.managerIds}
+                      onChange={(ids) => setFormData({ ...formData, managerIds: ids })}
+                      editingUser={editingUser}
+                    />
                     <p className="text-xs text-gray-500 mt-1">
-                      Hold Ctrl/Cmd to select multiple. Optional - leave empty if no manager needed.
+                      Click a manager to add. Use the × on a chip to remove an individual manager.
                     </p>
                   </div>
                 )}

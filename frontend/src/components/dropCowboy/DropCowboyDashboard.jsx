@@ -1,11 +1,3 @@
-/**
- * Ringless Voicemail Dashboard Container Component
- * 
- * Clean, modular implementation of Ringless Voicemail dashboard
- * Uses custom hooks and service layer for separation of concerns
- */
-
-
 import React, { useState, useEffect } from 'react';
 import { Activity, AlertCircle, RefreshCw } from 'lucide-react';
 import { format, parseISO } from 'date-fns';
@@ -16,38 +8,13 @@ import ErrorBoundary from './ErrorBoundary';
 import { useMetrics, useSyncLogs, useManualFetch } from '../../hooks/dropCowboy/useDropCowboy';
 import { extractUniqueClients } from '../../utils/dropCowboy/helpers';
 
-/**
- * Main Ringless Voicemail Dashboard Component
- * Embeddable in the main app's Services page
- * 
- * @param {Array} clientCampaigns - Optional: Filter to specific campaign IDs for a client
- * @param {String} clientName - Optional: Display client name in header
- */
-export default function DropCowboyDashboard({ clientCampaigns = null, clientName = null }) {
+export default function DropCowboyDashboard({ clientCampaigns = null, clientName = null, accessibleClientIds = [] }) {
     const [selectedClient, setSelectedClient] = useState('All');
     const [clientOptions, setClientOptions] = useState(['All']);
-    // Records table filters (lifted from RecordsTable)
     const [searchTerm, setSearchTerm] = useState('');
     const [statusFilter, setStatusFilter] = useState('all');
     const [recordsClientFilter, setRecordsClientFilter] = useState('all');
     const [dateFilters, setDateFilters] = useState({ startDate: '', endDate: '' });
-
-    // Debounced search to avoid rapid-fire fetches while typing
-    const [debouncedSearch, setDebouncedSearch] = useState(searchTerm);
-    useEffect(() => {
-        const t = setTimeout(() => setDebouncedSearch(searchTerm), 300);
-        return () => clearTimeout(t);
-    }, [searchTerm]);
-
-    // Memoize filters object so child doesn't receive a new object each render
-    const recordsFilters = React.useMemo(() => ({
-        searchTerm: debouncedSearch,
-        statusFilter,
-        clientFilter: recordsClientFilter,
-        dateFilters
-    }), [debouncedSearch, statusFilter, recordsClientFilter, dateFilters]);
-
-    // Records table meta (updated by RecordsTable via onMetaChange)
     const [recordsMeta, setRecordsMeta] = useState({
         totalRecords: 0,
         currentPage: 1,
@@ -57,21 +24,60 @@ export default function DropCowboyDashboard({ clientCampaigns = null, clientName
         fetchMessage: ''
     });
 
-    // Use custom hooks for data fetching - pass campaign filter if provided
+    const [debouncedSearch, setDebouncedSearch] = useState(searchTerm);
+    useEffect(() => {
+        const t = setTimeout(() => setDebouncedSearch(searchTerm), 300);
+        return () => clearTimeout(t);
+    }, [searchTerm]);
+
+    const recordsFilters = React.useMemo(
+        () => ({
+            searchTerm: debouncedSearch,
+            statusFilter,
+            clientFilter: recordsClientFilter,
+            dateFilters,
+            accessibleClientIds,
+        }),
+        [debouncedSearch, statusFilter, recordsClientFilter, dateFilters, accessibleClientIds]
+    );
+
     const initialFilters = clientCampaigns ? { campaignIds: clientCampaigns } : {};
-    const { metrics, loading, error, refetch: refetchMetrics, setFilters: _setFilters, filters: _filters } = useMetrics(initialFilters);
+    const { metrics, loading, error, refetch: refetchMetrics, setFilters: _setFilters } = useMetrics(initialFilters);
     const { syncLogs, refetch: refetchSyncLogs } = useSyncLogs(10);
     const { triggerFetch, isFetching, error: fetchError } = useManualFetch();
 
-    // Extract unique clients when metrics change
-    useEffect(() => {
-        if (metrics?.campaigns) {
-            const clients = extractUniqueClients(metrics.campaigns);
-            setClientOptions(clients);
-        }
-    }, [metrics]);
+    /** 🧠 Filter campaigns and metrics by accessibleClientIds */
+    const filteredMetrics = React.useMemo(() => {
+        if (!metrics) return null;
 
-    // Auto-refresh data every 50 minutes
+        const filteredCampaigns = metrics.campaigns?.filter(c =>
+            accessibleClientIds.includes(c.client_id || c.clientId)
+        ) || [];
+
+        const clients = extractUniqueClients(filteredCampaigns);
+        return {
+            ...metrics,
+            campaigns: filteredCampaigns,
+            clientsData: clients.map(c => ({ id: c.id, name: c.name })),
+        };
+    }, [metrics, accessibleClientIds]);
+
+    /** 🪄 Set client dropdown options + auto-select if only one assigned */
+    useEffect(() => {
+        if (filteredMetrics?.campaigns) {
+            const clients = extractUniqueClients(filteredMetrics.campaigns);
+            setClientOptions(['All', ...clients.map(c => c.name)]);
+
+            // Auto-select the single client if only one is assigned
+            if (accessibleClientIds.length === 1 && clients.length === 1) {
+                setSelectedClient(clients[0].name);
+            } else {
+                setSelectedClient('All');
+            }
+        }
+    }, [filteredMetrics, accessibleClientIds]);
+
+    /** 🕒 Auto-refresh metrics & logs every 50 minutes */
     useEffect(() => {
         const interval = setInterval(() => {
             refetchMetrics();
@@ -80,81 +86,84 @@ export default function DropCowboyDashboard({ clientCampaigns = null, clientName
         return () => clearInterval(interval);
     }, [refetchMetrics, refetchSyncLogs]);
 
-    // Handle manual SFTP fetch
+    /** 🔄 Manual SFTP Fetch */
     const handleFetchNow = async () => {
         toast.info('Starting SFTP sync... This may take 30-60 seconds.', { autoClose: 3000 });
-
         const result = await triggerFetch();
 
         if (result.success) {
-            // Reload data after successful fetch
             await refetchMetrics();
             await refetchSyncLogs();
-
-            if (result.data?.warning) {
-                toast.warning(result.data.warning, { autoClose: 5000 });
-            } else if (result.data?.filesDownloaded > 0) {
-                toast.success(`Successfully fetched ${result.data.filesDownloaded} files from SFTP!`, { autoClose: 5000 });
-            } else {
-                toast.info('Sync completed - using existing data.', { autoClose: 3000 });
-            }
+            if (result.data?.warning) toast.warning(result.data.warning);
+            else if (result.data?.filesDownloaded > 0)
+                toast.success(`Fetched ${result.data.filesDownloaded} files!`);
+            else toast.info('Sync completed - no new files.');
         } else {
-            toast.error('Failed to fetch data: ' + (result.error || 'Unknown error'), { autoClose: 5000 });
+            toast.error('Failed to fetch: ' + (result.error || 'Unknown error'));
         }
     };
 
-    // (no-op) date filter handling for metrics uses `setFilters` from useMetrics when needed
+    /** 🧩 Filter campaigns by selected client */
+    const filteredCampaigns =
+        filteredMetrics?.campaigns?.filter(
+            (c) => selectedClient === 'All' || c.client === selectedClient
+        ) || [];
 
-    // Filter campaigns by client (for metrics/cards and campaigns list)
-    const filteredCampaigns = metrics?.campaigns?.filter(
-        c => selectedClient === 'All' || c.client === selectedClient
-    ) || [];
+    const selectedClientId =
+        selectedClient !== 'All'
+            ? filteredMetrics?.clientsData?.find((c) => c.name === selectedClient)?.id || null
+            : null;
 
     return (
         <ErrorBoundary>
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
-                {/* Page Header */}
-                <div className="mb-6">
+                {/* Header */}
+                <div className="mb-6 flex items-center justify-between">
                     <h1 className="text-2xl font-bold text-gray-900">Ringless Voicemail Dashboard</h1>
+
+                    {/* Client Dropdown (for multiple clients) */}
+                    {clientOptions.length > 2 && (
+                        <select
+                            value={selectedClient}
+                            onChange={(e) => setSelectedClient(e.target.value)}
+                            className="border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-blue-500"
+                        >
+                            {clientOptions.map((client) => (
+                                <option key={client} value={client}>
+                                    {client}
+                                </option>
+                            ))}
+                        </select>
+                    )}
                 </div>
 
-                {/* Error Messages */}
                 {(error || fetchError) && (
                     <div className="mb-6 bg-red-50 border border-red-200 rounded-lg p-4 flex items-start">
                         <AlertCircle className="text-red-600 mr-3 flex-shrink-0 mt-0.5" size={18} />
-                        <p className="text-sm text-red-800 leading-relaxed">
-                            {error || fetchError}
-                        </p>
+                        <p className="text-sm text-red-800 leading-relaxed">{error || fetchError}</p>
                     </div>
                 )}
 
-                {/* Minimal Action Bar */}
+                {/* Toolbar */}
                 <div className="mb-6 flex items-center justify-between gap-4 bg-white p-3 rounded-lg shadow-sm border border-gray-200">
-                    <div className="flex items-center gap-4">
-                        {/* Last Sync Info - Compact */}
-                        {syncLogs.length > 0 && syncLogs[0] && (
-                            <div className="text-xs text-gray-500">
+                    <div className="flex items-center gap-4 text-xs text-gray-500">
+                        {syncLogs.length > 0 && (
+                            <span>
                                 Last sync: {format(parseISO(syncLogs[0].timestamp), 'MMM dd, h:mm a')}
-                            </div>
+                            </span>
                         )}
                     </div>
-
-                    {/* Action Buttons */}
-                    <div className="flex items-center gap-2">
-                        <button
-                            onClick={handleFetchNow}
-                            disabled={isFetching}
-                            className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-sm"
-                        >
-                            <RefreshCw className={`w-4 h-4 ${isFetching ? 'animate-spin' : ''}`} />
-                            {isFetching ? 'Fetching...' : 'Fetch from SFTP'}
-                        </button>
-                    </div>
+                    <button
+                        onClick={handleFetchNow}
+                        disabled={isFetching}
+                        className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 text-sm"
+                    >
+                        <RefreshCw className={`w-4 h-4 ${isFetching ? 'animate-spin' : ''}`} />
+                        {isFetching ? 'Fetching...' : 'Fetch from SFTP'}
+                    </button>
                 </div>
 
-                                
-
-                                {/* Loading State */}
+                {/* Main content */}
                 {loading && !metrics ? (
                     <div className="flex items-center justify-center h-96">
                         <div className="text-center">
@@ -164,14 +173,12 @@ export default function DropCowboyDashboard({ clientCampaigns = null, clientName
                     </div>
                 ) : (
                     <div className="space-y-6">
-                        {/* Metrics Cards */}
-
-                                                {/* All Records Table */}
-                                                                        <RecordsTable
-                                                                            campaigns={filteredCampaigns}
-                                                                            filters={recordsFilters}
-                                                                            onMetaChange={(meta) => setRecordsMeta(meta)}
-                                                                        />
+                        {/* Records Table */}
+                        <RecordsTable
+                            campaigns={filteredCampaigns}
+                            filters={recordsFilters}
+                            accessibleClientIds={accessibleClientIds}
+                        />
                     </div>
                 )}
             </div>

@@ -1,5 +1,6 @@
 import { TrendingUp, CheckCircle, XCircle, DollarSign, ShieldQuestion } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext.jsx'
+import { hasFullAccess } from '../../utils/permissions.js';
 
 const MetricCard = ({ title, value, subtitle, icon: Icon, color = 'blue', clickable = false, onClick }) => {
   const colorClasses = {
@@ -38,7 +39,7 @@ const MetricCard = ({ title, value, subtitle, icon: Icon, color = 'blue', clicka
 
 const MetricsCards = ({ metrics, onMetricClick, viewLevel }) => {
   const { user } = useAuth();
-  const showCostForSuperadmin = user && user.role === 'superadmin';
+  const showCostForFullSystemAccessRoles = hasFullAccess(user);
 
   if (!metrics || !metrics.overall) {
     return (
@@ -61,7 +62,7 @@ const MetricsCards = ({ metrics, onMetricClick, viewLevel }) => {
 
   return (
     // Use a horizontal single-line layout with horizontal scrolling on small viewports
-    <div className={`grid ${showCostForSuperadmin ? 'grid-cols-5' : 'grid-cols-4'} gap-4 overflow-x-auto py-1`}>
+    <div className={`grid ${showCostForFullSystemAccessRoles ? 'grid-cols-5' : 'grid-cols-4'} gap-4 overflow-x-auto py-1`}>
       <MetricCard
         title="Total VoiceMails Sent"
         value={overall.totalSent.toLocaleString()}
@@ -98,7 +99,7 @@ const MetricsCards = ({ metrics, onMetricClick, viewLevel }) => {
         clickable={viewLevel === 'campaign'}
         onClick={() => viewLevel === 'campaign' && onMetricClick('other')}
       />
-      {showCostForSuperadmin && (
+      {showCostForFullSystemAccessRoles && (
         <MetricCard
           title="Total Campaign Cost"
           value={`$${(overall.totalCost || 0).toFixed(2)}`}
