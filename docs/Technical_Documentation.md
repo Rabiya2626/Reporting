@@ -1,55 +1,58 @@
-# Technical Documentation
+# 🧾 Technical Documentation
 
-Overview
-- Short reference for integrations, data flows, packages and quick extension notes.
+---
 
-Data sources
-- Mautic: fetched via API; cached under `modules/.temp_pages`. Contains campaigns, segments (with contact totals), contacts, emails and per-email reports.
-- DropCowboy (RVM): retrieved via SFTP, parsed and stored as JSON in `backend/data/campaigns` for per-record reporting.
-- Vicidial: agent and call-center stats collected by the Vicidialer service (login, pause, active state, calls, totals).
+## 1. Overview
 
-Packages (key ones)
-- Backend: `@prisma/client`, `axios`, `ssh2-sftp-client`, `nodemailer`, `bcryptjs`, `jsonwebtoken`, `express`, `winston`, `zod`, `node-cron`.
-- Frontend: `react`, `vite`, `tailwindcss`, `axios`, `zustand`, `react-router-dom`, `recharts`, `react-toastify`.
+Short reference for integrations, data flows, packages, and quick extension notes.
 
-Modules & responsibilities
-- DropCowboy: SFTP ingestion → parse → save JSON → expose campaign endpoints and metrics.
-- Mautic: scheduled/on-demand `axios` calls → ingest campaigns, segments, contacts, email delivery/open/click reports.
-- Vicidialer: collect and aggregate per-agent and global telephony statistics for dashboards.
+### Data Sources
 
-Roles, pages & permissions
-- Pages and settings can be assigned to dynamic roles at runtime. Roles control access to SMTP, SFTP, Vicidial credentials and AI assistant features.
+- **Mautic**: Fetched via API; cached under `modules/.temp_pages`. Contains campaigns, segments (with contact totals), contacts, emails, and per-email reports.  
+- **DropCowboy (RVM)**: Retrieved via SFTP, parsed, and stored as JSON in `backend/data/campaigns` for per-record reporting.  
+- **Vicidial**: Agent and call-center stats collected by the Vicidialer service (login, pause, active state, calls, totals).
 
-AI assistant
-- In-app assistant provides guided actions (e.g., show email stats, active campaigns, compare clients). It uses existing data endpoints to answer user queries.
+### Packages (Key Ones)
 
-SMTP & templates
+- **Backend:** `@prisma/client`, `axios`, `ssh2-sftp-client`, `nodemailer`, `bcryptjs`, `jsonwebtoken`, `express`, `winston`, `zod`, `node-cron`
+- **Frontend:** `react`, `vite`, `tailwindcss`, `axios`, `zustand`, `react-router-dom`, `recharts`, `react-toastify`
+
+### Modules & Responsibilities
+
+- **DropCowboy:** SFTP ingestion → parse → save JSON → expose campaign endpoints and metrics.  
+- **Mautic:** Scheduled/on-demand `axios` calls → ingest campaigns, segments, contacts, email delivery/open/click reports.  
+- **Vicidialer:** Collect and aggregate per-agent and global telephony statistics for dashboards.
+
+### Roles, Pages & Permissions
+
+- Pages and settings can be assigned to dynamic roles at runtime.  
+- Roles control access to SMTP, SFTP, Vicidial credentials, and AI assistant features.
+
+### AI Assistant
+
+- In-app assistant provides guided actions (e.g., show email stats, active campaigns, compare clients).  
+- Uses existing data endpoints to answer user queries.
+
+### SMTP & Templates
+
 - System can send emails via SMTP using stored templates for notifications and campaigns.
 
-Security & operations
-- Keep SFTP/API credentials in environment variables and encrypt when possible.
+### Security & Operations
+
+- Keep SFTP/API credentials in environment variables and encrypt when possible.  
 - Use Prisma migrations (`backend/prisma`) and `prisma generate` after schema changes.
 
-Short-term enhancements
-- Add SMS via Mautic (send + receive stats).  
-- Improve RVM indexing and search.  
-- Add audit logs for dynamic role changes.
+### Short-Term Enhancements
 
-Data locations (quick)
+- Add SMS via Mautic (send + receive stats)  
+- Improve RVM indexing and search  
+- Add audit logs for dynamic role changes
+
+### Data Locations (Quick)
+
 - Mautic cache: `modules/.temp_pages`  
 - RVM JSON: `backend/data/campaigns`  
 - Prisma schemas: `backend/prisma`
-
----
-This is a concise, corrected technical document. Update as features evolve.
-
-# Technical Documentation
-
----
-
-## 1. Introduction
-
-This document provides a technical overview of the reporting dashboard application, detailing its architecture, modules, and third-party dependencies. The application is a full-stack solution with a Node.js backend and a React frontend.
 
 ---
 
@@ -61,103 +64,265 @@ The backend is built with **Node.js** and **Express.js**, serving a RESTful API 
 
 #### **2.1.1. DropCowboy (Ringless Voicemail)**
 
-*   **Purpose**: This module handles data for DropCowboy, a ringless voicemail service.
-*   **Functionality**: It connects to a client-provided **SFTP server** to download campaign report files (in JSON format). The backend processes these files, parses the data, and stores the relevant campaign statistics in the database.
-*   **Implementation**: The `SftpService` manages the SFTP connection, file downloading, and parsing. It ensures that files are not re-imported, preventing data duplication.
+- **Purpose:** Handles data ingestion for DropCowboy, a ringless voicemail service.  
+- **Functionality:** Connects to a client-provided **SFTP server** to download campaign report files (JSON). Parses and stores campaign statistics in the database.  
+- **Implementation:** `SftpService` manages SFTP connection, file downloading, and parsing, preventing duplicate imports.
 
 #### **2.1.2. Mautic (Marketing Automation)**
 
-*   **Purpose**: This module integrates with Mautic, an open-source marketing automation platform.
-*   **Functionality**: It fetches comprehensive data from the Mautic API, including:
-    *   Campaigns
-    *   Segments (contact lists) and their contact counts
-    *   Emails and their performance statistics (sends, opens, clicks, bounces)
-    *   Detailed email reports
-*   **Implementation**: The `mauticAPI.js` service uses **Axios** to communicate with the Mautic API. It features robust error handling, including retry-with-backoff logic, and is optimized for performance with incremental data synchronization.
+- **Purpose:** Integrates with Mautic, an open-source marketing automation platform.  
+- **Functionality:** Fetches data from the Mautic API:
+  - Campaigns  
+  - Segments (contact lists)  
+  - Emails and performance metrics (sends, opens, clicks, bounces)  
+  - Detailed email reports  
+- **Implementation:** `mauticAPI.js` uses **Axios** with retry and backoff logic for optimized data sync.
 
 #### **2.1.3. Vicidial (Call Center)**
 
-*   **Purpose**: This module integrates with Vicidial, a popular open-source contact center suite.
-*   **Functionality**: It retrieves real-time and historical statistics about call center operations, such as:
-    *   Agent status (active, paused, etc.)
-    *   Agent login/logout times and session duration
-    *   Call counts and lead statistics
-*   **Implementation**: The `vicidial.service.js` provides a wrapper for the Vicidial API. It dynamically fetches credentials from the database and constructs API requests to query agent and campaign data.
+- **Purpose:** Integrates with Vicidial to fetch agent and call center statistics.  
+- **Functionality:** Retrieves:
+  - Agent login, logout, pause states  
+  - Call counts and status metrics  
+- **Implementation:** `vicidial.service.js` wraps Vicidial API with dynamic credential injection.
+
+---
 
 ### 2.2. Core Services
 
 #### **2.2.1. Dynamic Roles & Permissions**
 
-*   **Purpose**: To provide a flexible and granular access control system.
-*   **Functionality**: The system allows administrators to create, edit, and delete user roles dynamically. Each role can be assigned a specific set of permissions, which dictate access to different pages (e.g., Dashboard, Clients, Settings) and actions (e.g., Create, Read, Update, Delete). There are also system-protected roles that cannot be modified.
-*   **Implementation**: The `backend/routes/roles.js` file defines the API endpoints for managing roles. Permissions are defined in a schema and stored as a JSON object in the database for each role.
+- **Purpose:** Provide flexible access control.  
+- **Functionality:** Admins can manage roles and permissions that dictate page and action-level access.  
+- **Implementation:** Defined in `backend/routes/roles.js`; roles stored as JSON schema objects in DB.
 
 #### **2.2.2. Email Notifications (SMTP)**
 
-*   **Purpose**: To send automated email notifications for various application events.
-*   **Functionality**: The system sends emails for events such as new user registration, role assignments, and data synchronization completion.
-*   **Implementation**: The `EmailNotificationService` uses the **Nodemailer** library to send emails via a configured **SMTP server**. SMTP credentials and email templates are stored in the database, allowing for easy configuration and customization of email content.
+- **Purpose:** Send system notifications via email.  
+- **Functionality:** Handles registration, role changes, sync completion alerts.  
+- **Implementation:** Uses **Nodemailer** via `EmailNotificationService`. SMTP credentials and templates stored in DB.
+
+---
 
 ### 2.3. Backend Dependencies
 
-#### **Production Dependencies**
-*   **@prisma/client**: Prisma's auto-generated database client for querying.
-*   **axios**: Promise-based HTTP client for making requests to external APIs (Mautic).
-*   **bcryptjs**: Library for hashing passwords.
-*   **cors**: Express middleware to enable Cross-Origin Resource Sharing.
-*   **date-fns**: Modern JavaScript date utility library.
-*   **dotenv**: Loads environment variables from a `.env` file.
-*   **express**: Fast, unopinionated, minimalist web framework for Node.js.
-*   **express-rate-limit**: Basic rate-limiting middleware for Express.
-*   **helmet**: Helps secure Express apps by setting various HTTP headers.
-*   **jsonwebtoken**: Library to work with JSON Web Tokens for authentication.
-*   **multer**: Middleware for handling `multipart/form-data`, used for file uploads.
-*   **node-cron**: A simple cron-like job scheduler for Node.js.
-*   **nodemailer**: Module for sending emails from Node.js applications.
-*   **p-limit**: Utility to limit concurrent promise-based operations.
-*   **ssh2-sftp-client**: A client for SFTP.
-*   **winston**: A multi-transport async logging library.
-*   **zod**: TypeScript-first schema declaration and validation library.
+#### **Production**
+`@prisma/client`, `axios`, `bcryptjs`, `cors`, `dotenv`, `express`, `helmet`, `jsonwebtoken`, `nodemailer`, `node-cron`, `ssh2-sftp-client`, `winston`, `zod`
 
-#### **Development Dependencies**
-*   **nodemon**: Utility that monitors for file changes and automatically restarts the server.
-*   **prisma**: The Prisma CLI for database migrations and client generation.
+#### **Development**
+`nodemon`, `prisma`
 
 ---
 
 ## 3. Frontend Architecture
 
-The frontend is a single-page application (SPA) built with **React**. It provides a user-friendly interface for visualizing the data fetched by the backend. The application is built using **Vite** and styled with **Tailwind CSS**.
+Frontend built using **React + Vite**, styled with **Tailwind CSS** for responsive and fast UI rendering.
 
 ### 3.1. Core Libraries
 
-*   **React**: A JavaScript library for building user interfaces.
-*   **React Router**: For declarative routing within the React application.
-*   **Zustand**: A small, fast, and scalable state management solution for React.
-*   **Axios**: Used for making API calls to the backend.
-*   **Recharts**: A composable charting library built on React components.
-*   **Tailwind CSS**: A utility-first CSS framework for rapid UI development.
+`react`, `react-router-dom`, `zustand`, `axios`, `recharts`, `tailwindcss`, `react-toastify`
 
 ### 3.2. Frontend Dependencies
 
-#### **Production Dependencies**
-*   **@tailwindcss/vite**: Tailwind CSS integration for Vite.
-*   **axios**: Promise-based HTTP client for backend communication.
-*   **date-fns**: Modern JavaScript date utility library.
-*   **lucide-react**: A library of simply beautiful open-source icons.
-*   **react**: The core library for building the UI.
-*   **react-dom**: Provides DOM-specific methods for React.
-*   **react-router-dom**: DOM bindings for React Router.
-*   **react-select**: A flexible and beautiful Select Input control for React.
-*   **react-toastify**: Library for adding notifications to the app.
-*   **recharts**: Charting library for creating data visualizations.
-*   **zustand**: State management library.
+#### **Production**
+`axios`, `lucide-react`, `recharts`, `react-select`, `zustand`
 
-#### **Development Dependencies**
-*   **@vitejs/plugin-react**: The official Vite plugin for React.
-*   **autoprefixer**: A PostCSS plugin to parse CSS and add vendor prefixes.
-*   **eslint**: Pluggable and configurable linter tool for identifying and reporting on patterns in JavaScript.
-*   **postcss**: A tool for transforming CSS with JavaScript.
-*   **tailwindcss**: The CSS framework.
-*   **vite**: Next-generation frontend tooling.
+#### **Development**
+`vite`, `eslint`, `tailwindcss`, `autoprefixer`
 
+---
+
+# 📘 Mautic Email Performance – Endpoint Documentation
+
+This section describes all **Mautic API endpoints** used in the application to gather **email performance metrics** such as opens, clicks, bounces, and unsubscribe rates.
+
+---
+
+## 🔐 Authentication
+
+All endpoints use **Basic Auth**.
+
+```http
+Authorization: Basic <base64(username:password)>
+Accept: application/json
+```
+
+```
+auth: { username: "your_username", password: "your_password" }
+Base URL: https://client_name.autovationpro.com/api
+```
+
+---
+
+### 📊 1. Sent / Delivered Count
+
+**Purpose:**  
+Retrieve total number of emails sent and their overall statistics.
+
+**Endpoint:**
+```
+GET /emails/{emailId}
+```
+
+**Key Fields Returned**
+
+| **Field Name**   | **Description**                          |
+|------------------|------------------------------------------|
+| `sentCount`      | Number of emails sent                    |
+| `readCount`      | Number of emails opened                  |
+| `clickedCount`   | Total clicks across all links             |
+| `bounced`        | Number of failed deliveries              |
+| `unsubscribed`   | Number of unsubscribes                   |
+
+---
+
+### 👁️ 2. Opened / Read Emails
+
+**Purpose:**  
+Fetch all recipients who opened (read) the email.
+
+**Endpoint:**
+```
+GET /stats/email_stats?where[0][col]=email_id&where[0][val]={emailId}&where[1][col]=is_read&where[1][val]=1
+```
+
+**Table:**  
+`email_stats`
+
+**Logic:**  
+Filters records where `is_read = 1`.
+
+**Used For:**  
+- Open Count  
+- **Formula:** `Open Rate = (Opened / Sent) × 100`
+
+---
+
+### 🔗 3. Clicked Links
+
+**Purpose:**  
+Retrieve all tracked link clicks for a specific email.
+
+**Endpoint:**
+```
+GET /stats/channel_url_trackables?where[0][col]=channel_id&where[0][val]={emailId}
+```
+
+**Table:**  
+`channel_url_trackables`
+
+**Key Fields**
+
+| **Field Name**   | **Description**                                  |
+|------------------|--------------------------------------------------|
+| `redirect_id`    | Internal ID of each tracked link                 |
+| `hits`           | Total number of clicks                           |
+| `unique_hits`    | Number of unique contacts who clicked            |
+
+**Used For:**  
+- Click Count  
+- **Formula:** `Click Rate = (Unique Clicks / Sent) × 100`
+
+**To Get Actual URLs:**
+```
+GET /redirects/{redirect_id}
+```
+
+---
+
+### ❌ 4. Bounced Emails
+
+**Purpose:**  
+Find all email delivery failures.
+
+**Endpoint:**
+```
+GET /stats/email_stats?where[0][col]=email_id&where[0][val]={emailId}&where[1][col]=is_failed&where[1][val]=1
+```
+
+**Table:**  
+`email_stats`
+
+**Logic:**  
+Filters records where `is_failed = 1`.
+
+**Used For:**  
+- Bounce Count  
+- **Formula:** `Bounce Rate = (Bounced / Sent) × 100`
+
+---
+
+### 🚫 5. Unsubscribed Contacts
+
+**Purpose:**  
+Retrieve contacts who unsubscribed from a specific email.
+
+**Endpoint:**
+```
+GET /stats/lead_event_log?where[0][col]=bundle&where[0][val]=email&where[1][col]=object_id&where[1][val]={emailId}&where[2][col]=action&where[2][val]=unsubscribed
+```
+
+**Table:**  
+`lead_event_log`
+
+**Logic:**  
+Filters events where:
+- `bundle = email`  
+- `object_id = {emailId}`  
+- `action = unsubscribed`
+
+**Used For:**  
+- Unsubscribe Count  
+- **Formula:** `Unsubscribe Rate = (Unsubscribed / Sent) × 100`
+
+---
+
+### 📈 6. Calculated Rates Summary
+
+| **Metric**         | **Formula**                          | **Data Source**                       |
+|--------------------|--------------------------------------|---------------------------------------|
+| **Open Rate**       | `(Opened / Sent) × 100`              | `/emails/{id}`, `/stats/email_stats`  |
+| **Click Rate**      | `(Unique Clicks / Sent) × 100`       | `/stats/channel_url_trackables`       |
+| **Bounce Rate**     | `(Bounced / Sent) × 100`             | `/stats/email_stats`                  |
+| **Unsubscribe Rate**| `(Unsubscribed / Sent) × 100`        | `/stats/lead_event_log`               |
+
+---
+
+### 🧩 7. Example API Flow (per email)
+
+| **Step** | **Metric** | **Endpoint** |
+|-----------|-------------|--------------|
+| 1️⃣ | Sent count, readCount, clickCount, unsubscribed (overview) | `/emails/{emailId}` |
+| 2️⃣ | Open details | `/stats/email_stats?is_read=1` |
+| 3️⃣ | Click details (tracked links) | `/stats/channel_url_trackables` |
+| 4️⃣ | Bounce details | `/stats/email_stats?is_failed=1` |
+| 5️⃣ | Unsubscribe details | `/stats/lead_event_log?action=unsubscribed` |
+
+---
+
+### 🧾 8. Example Consolidated Output
+
+| **Metric**         | **Example Value** | **Source** |
+|--------------------|------------------|-------------|
+| Sent              | 962              | `/emails/138` |
+| Opens             | 127              | `/stats/email_stats?is_read=1` |
+| Clicks            | 119              | `/stats/channel_url_trackables` |
+| Bounces           | 0                | `/stats/email_stats?is_failed=1` |
+| Unsubscribes      | 0                | `/stats/lead_event_log?action=unsubscribed` |
+| **Open Rate**     | **13.2%**        | Computed |
+| **Click Rate**    | **12.4%**        | Computed |
+| **Unsubscribe Rate** | **0%**         | Computed |
+
+---
+
+### 🧠 Notes
+
+- **`email_stats` table** → stores send, open, fail events  
+- **`channel_url_trackables` table** → stores click tracking per link  
+- **`lead_event_log` table** → stores user actions like unsubscribes  
+- **`page_redirects` table** → resolves redirect IDs to actual link URLs  
+
+---
+
+**Author:** Internal Mautic Analytics Documentation  
+**Last Updated:** January 2026
