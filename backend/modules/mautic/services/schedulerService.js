@@ -10,6 +10,29 @@ class MauticSchedulerService {
   }
 
   /**
+   * Get current sync progress and recent sync logs for monitoring
+   */
+  async getSyncProgress() {
+    try {
+      const activeClients = await prisma.mauticClient.count({ where: { isActive: true } });
+      const recentSyncs = await prisma.syncLog.findMany({
+        where: { source: 'mautic' },
+        orderBy: { syncStartedAt: 'desc' },
+        take: 10
+      });
+
+      return {
+        isRunning: this.isRunning,
+        activeClients,
+        recentSyncs
+      };
+    } catch (error) {
+      console.error('Error fetching sync progress from DB:', error.message);
+      throw error;
+    }
+  }
+
+  /**
    * Start the scheduler
    */
   start() {
