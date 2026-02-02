@@ -258,6 +258,7 @@ CREATE TABLE `MauticEmail` (
     `sentCount` INTEGER NOT NULL DEFAULT 0,
     `readCount` INTEGER NOT NULL DEFAULT 0,
     `clickedCount` INTEGER NOT NULL DEFAULT 0,
+    `uniqueClicks` INTEGER NOT NULL DEFAULT 0,
     `unsubscribed` INTEGER NOT NULL DEFAULT 0,
     `bounced` INTEGER NOT NULL DEFAULT 0,
     `readRate` DECIMAL(5, 2) NOT NULL DEFAULT 0,
@@ -295,6 +296,24 @@ CREATE TABLE `MauticEmailReport` (
     INDEX `MauticEmailReport_clientId_idx`(`clientId`),
     INDEX `MauticEmailReport_dateSent_idx`(`dateSent`),
     UNIQUE INDEX `MauticEmailReport_clientId_eId_emailAddress_dateSent_key`(`clientId`, `eId`, `emailAddress`, `dateSent`),
+    PRIMARY KEY (`id`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- CreateTable
+CREATE TABLE `MauticClickTrackable` (
+    `id` INTEGER NOT NULL AUTO_INCREMENT,
+    `redirectId` VARCHAR(255) NOT NULL,
+    `hits` INTEGER NOT NULL DEFAULT 0,
+    `uniqueHits` INTEGER NOT NULL DEFAULT 0,
+    `channelId` INTEGER NOT NULL,
+    `url` VARCHAR(1000) NULL,
+    `clientId` INTEGER NOT NULL,
+    `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `updatedAt` DATETIME(3) NOT NULL,
+
+    INDEX `MauticClickTrackable_clientId_idx`(`clientId`),
+    INDEX `MauticClickTrackable_channelId_idx`(`channelId`),
+    UNIQUE INDEX `mautic_click_redirect_unique`(`clientId`, `redirectId`),
     PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
@@ -666,6 +685,9 @@ ALTER TABLE `MauticEmail` ADD CONSTRAINT `MauticEmail_clientId_fkey` FOREIGN KEY
 
 -- AddForeignKey
 ALTER TABLE `MauticEmailReport` ADD CONSTRAINT `MauticEmailReport_clientId_fkey` FOREIGN KEY (`clientId`) REFERENCES `MauticClient`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE `MauticClickTrackable` ADD CONSTRAINT `MauticClickTrackable_clientId_fkey` FOREIGN KEY (`clientId`) REFERENCES `MauticClient`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE `MauticEmailStatsCache` ADD CONSTRAINT `MauticEmailStatsCache_clientId_fkey` FOREIGN KEY (`clientId`) REFERENCES `MauticClient`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
