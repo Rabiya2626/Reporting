@@ -139,30 +139,35 @@ class MauticSchedulerService {
             if (syncResult.success) {
               console.log(`💾 [${client.name}] Saving data to database...`);
 
-              // Save emails, campaigns, segments
-              // Email reports are already saved to DB during fetch
+              // syncAllData already saves emails to DB with correct readCount/sentCount/clickedCount
+              // Only save campaigns and segments here (emails are already persisted)
               const saveResults = await Promise.all([
-                dataService.saveEmails(client.id, syncResult.data.emails),
                 dataService.saveCampaigns(client.id, syncResult.data.campaigns),
                 dataService.saveSegments(client.id, syncResult.data.segments)
               ]);
 
+              // For backwards compatibility, create a mock emailsResult object
+              const emailsResult = {
+                created: 0,
+                updated: syncResult.data.emails?.length || 0,
+                total: syncResult.data.emails?.length || 0
+              };
+
               // Update last sync time
               await dataService.updateClientSyncTime(client.id);
 
-              console.log(`✅ [${client.name}] Synced successfully - Emails: ${saveResults[0].total}, Campaigns: ${saveResults[1].total}, Segments: ${saveResults[2].total}, Email Reports: ${syncResult.data.emailReports.created} created, ${syncResult.data.emailReports.skipped} skipped`);
               // Count total email reports currently in DB for this client
               const totalReportsInDb = await prisma.mauticEmailReport.count({ where: { clientId: client.id } });
 
-              console.log(`✅ [${client.name}] Synced successfully - Emails: ${saveResults[0].total}, Campaigns: ${saveResults[1].total}, Segments: ${saveResults[2].total}, Email Reports: ${syncResult.data.emailReports.created} created, ${syncResult.data.emailReports.skipped} skipped, totalInDb: ${totalReportsInDb}`);
+              console.log(`✅ [${client.name}] Synced successfully - Emails: ${emailsResult.total}, Campaigns: ${saveResults[0].total}, Segments: ${saveResults[1].total}, Email Reports: ${syncResult.data.emailReports.created} created, ${syncResult.data.emailReports.skipped} skipped, totalInDb: ${totalReportsInDb}`);
 
               return {
                 success: true,
                 clientId: client.id,
                 clientName: client.name,
-                emails: saveResults[0],
-                campaigns: saveResults[1],
-                segments: saveResults[2],
+                emails: emailsResult,
+                campaigns: saveResults[0],
+                segments: saveResults[1],
                 emailReports: {
                   ...syncResult.data.emailReports,
                   totalInDb: totalReportsInDb
@@ -256,13 +261,19 @@ class MauticSchedulerService {
         throw new Error(syncResult.error);
       }
 
-      // Save emails, campaigns, segments
-      // Email reports are already saved to DB during fetch
-      const [emailsResult, campaignsResult, segmentsResult] = await Promise.all([
-        dataService.saveEmails(client.id, syncResult.data.emails),
+      // syncAllData already saves emails to DB with correct readCount/sentCount/clickedCount
+      // Only save campaigns and segments here (emails are already persisted)
+      const [campaignsResult, segmentsResult] = await Promise.all([
         dataService.saveCampaigns(client.id, syncResult.data.campaigns),
         dataService.saveSegments(client.id, syncResult.data.segments)
       ]);
+
+      // For backwards compatibility, create a mock emailsResult object
+      const emailsResult = {
+        created: 0,
+        updated: syncResult.data.emails?.length || 0,
+        total: syncResult.data.emails?.length || 0
+      };
 
       // Update last sync time
       await dataService.updateClientSyncTime(client.id);
