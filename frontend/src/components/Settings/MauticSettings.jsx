@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Settings as SettingsIcon } from 'lucide-react';
+import { Plus, Settings as SettingsIcon } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { useClients, useSync } from '../../hooks/mautic';
 import ClientsTable from '../mautic/ClientsTable';
@@ -42,6 +42,9 @@ const MauticSettings = () => {
     }
   };
 
+  // filter out SMS clients
+  const mauticOnlyClients = clients?.filter(client => client.reportId !== 'sms-only');
+
   if (!canAccessSetting('mautic')) return null;
 
   return (
@@ -63,6 +66,7 @@ const MauticSettings = () => {
               onClick={() => { setEditingMauticClient(null); setIsMauticModalOpen(true); }}
               className="btn btn-primary"
             >
+              <Plus className="w-4 h-4" />
               Add Client
             </button>
             <button
@@ -80,7 +84,7 @@ const MauticSettings = () => {
 
         <div>
           <ClientsTable
-            clients={clients}
+            clients={mauticOnlyClients}
             onEdit={(c) => { setEditingMauticClient(c); setIsMauticModalOpen(true); }}
             onRefresh={refetchClients}
           />

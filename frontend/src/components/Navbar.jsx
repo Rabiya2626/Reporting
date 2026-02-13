@@ -21,7 +21,7 @@ const Navbar = () => {
             if (!mounted || !site) return;
             if (site.logoPath) setSiteLogo(site.logoPath);
             if (site.siteTitle) setSiteTitle(site.siteTitle);
-        }).catch(() => {});
+        }).catch(() => { });
 
         // listen for immediate updates when customization is changed in Settings
         const handler = (ev) => {
@@ -47,11 +47,11 @@ const Navbar = () => {
     // Helper to check page access from customRole.permissions.Pages
     const hasPageAccess = (pageKey) => {
         if (hasFullAccess()) return true;
-        
+
         // Check customRole.permissions.Pages
         const pages = user?.customRole?.permissions?.Pages;
         if (pages && pages[pageKey] === true) return true;
-        
+
         // Backward compatibility for legacy users without customRole
         if (!user?.customRoleId) {
             if (['superadmin', 'admin'].includes(user?.role)) return true;

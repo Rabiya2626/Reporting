@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import fs from 'fs';
 import pLimit from 'p-limit';
 import prisma from '../../../prisma/client.js';
+import logger from '../../../utils/logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -102,7 +103,7 @@ class MauticAPIService {
       try {
         return await fn();
       } catch (error) {
-        const isRetryable = 
+        const isRetryable =
           error.code === 'ETIMEDOUT' ||
           error.code === 'ECONNRESET' ||
           error.code === 'ECONNREFUSED' || // ⚡ Added
@@ -113,13 +114,13 @@ class MauticAPIService {
           error.response?.status === 502 || // Bad gateway
           error.response?.status === 503 || // Service unavailable
           error.response?.status === 504;   // ⚡ Gateway timeout
-        
+
         if (!isRetryable || i === maxRetries - 1) {
           throw error;
         }
-        
+
         const delay = Math.min(initialDelay * Math.pow(2, i), 30000); // ⚡ Cap at 30s
-        console.log(`   ⚠️  Retry ${i + 1}/${maxRetries} in ${delay/1000}s (${error.message})...`);
+        console.log(`   ⚠️  Retry ${i + 1}/${maxRetries} in ${delay / 1000}s (${error.message})...`);
         await new Promise(resolve => setTimeout(resolve, delay));
       }
     }
@@ -443,10 +444,10 @@ class MauticAPIService {
       }
 
       console.log(`✅ Total segments fetched: ${segments.length}`);
-      
+
       // ⚡ COUNT CONTACTS FOR EACH SEGMENT
       console.log(`\n🔍 Counting contacts for each segment...`);
-      
+
       // ⚡ HIGH concurrency for ultra-fast contact counting
       const CONCURRENCY = Math.max(1, parseInt(process.env.MAUTIC_FETCH_CONCURRENCY || '20', 10)); // ⚡ 4x faster!
       const pLimiter = pLimit(CONCURRENCY);
@@ -485,7 +486,7 @@ class MauticAPIService {
 
       const totalContacts = segmentsWithCounts.reduce((sum, seg) => sum + (seg.leadCount || 0), 0);
       console.log(`\n✅ Contact count complete! Total across all segments: ${totalContacts}`);
-      
+
       return segmentsWithCounts;
     } catch (error) {
       console.error('Error fetching segments:', error.message);
@@ -503,7 +504,7 @@ class MauticAPIService {
   async fetchReport(client) {
     // Import dataService here to avoid circular dependencies
     const { default: dataService } = await import('./dataService.js');
-    
+
     try {
       const apiClient = this.createClient(client);
       const reportId = client.reportId;
@@ -577,7 +578,7 @@ class MauticAPIService {
         const totalAvailable = typeof rawTotalAvailable === 'number'
           ? rawTotalAvailable
           : parseInt(String(rawTotalAvailable).replace(/[^0-9]/g, ''), 10) || 0;
-        
+
         console.log(`   Batch ${Math.floor(start / limit) + 1}: Fetched ${batchRows.length} rows (Total in Mautic: ${totalAvailable || 'unknown'}, Progress: ${totalRows + batchRows.length})...`);
 
         // ⚡ ULTRA FAST EXIT: If no data at all, exit immediately
@@ -815,9 +816,10 @@ class MauticAPIService {
   }
 
   /**
-   * Sync all data for a client (emails, campaigns, segments, reports)
+   * Sync all data for a client (emails, campaigns, segments, SMS campaigns, reports)
    * Email reports are saved to database during fetch (streaming)
    * ⚡ ULTRA OPTIMIZED: Skips metadata on incremental sync for 1000x speed!
+   * For SMS-only clients (reportId='sms-only'), only fetches SMS campaigns
    * @param {Object} client - Client configuration
    * @returns {Promise<Object>} Sync results
    */
@@ -825,34 +827,138 @@ class MauticAPIService {
     try {
       console.log(`🔄 Starting sync for ${client.name}...`);
 
-      // ⚡⚡⚡ SPEED BOOST: Check if we have any data already
+      // ✅ Check if this is an SMS-only client
+      const isSmsOnly = client.reportId === 'sms-only';
+
+      if (isSmsOnly) {
+        console.log(`📱 SMS-ONLY CLIENT - Fetching SMS campaigns only...`);
+        
+        // For SMS-only clients, only fetch SMS campaigns
+        const smsCampaigns = await this.fetchSmses(client);
+        
+        // Persist SMS campaigns to DB with smart categorization
+        if (smsCampaigns && smsCampaigns.length > 0) {
+          try {
+            const { default: smsService } = await import('./smsService.js');
+
+            // Get all active Mautic clients for categorization (exclude sms-only clients)
+            const allMauticClients = await prisma.mauticClient.findMany({
+              where: {
+                isActive: true,
+                NOT: { reportId: 'sms-only' }
+              },
+              select: { id: true, name: true, reportId: true }
+            });
+
+            const smsSaveRes = await smsService.storeSmsForMauticClient(client.id, smsCampaigns, allMauticClients);
+            console.log(`   ✅ Saved SMS campaigns to DB: created=${smsSaveRes.created} updated=${smsSaveRes.updated} preserved=${smsSaveRes.preserved} categorized=${smsSaveRes.categorized}`);
+
+            // ✅ Fetch and store SMS stats for each campaign
+            console.log(`📊 Fetching SMS stats for ${smsCampaigns.length} campaigns...`);
+            let totalStatsCreated = 0;
+            let totalStatsSkipped = 0;
+
+            for (const sms of smsCampaigns) {
+              try {
+                // Find the local SMS record to get its ID
+                const localSms = await prisma.mauticSms.findUnique({
+                  where: { mauticId: sms.id }
+                });
+
+                if (localSms) {
+                  const statsResult = await this.fetchAndStoreSmsStats(client, localSms.id, sms.id);
+                  totalStatsCreated += statsResult.created || 0;
+                  totalStatsSkipped += statsResult.skipped || 0;
+                  console.log(`   ✅ SMS "${sms.name}": ${statsResult.created} stats created, ${statsResult.skipped} skipped`);
+                }
+              } catch (statsErr) {
+                console.warn(`   ⚠️ Failed to fetch stats for SMS ${sms.id}:`, statsErr.message);
+              }
+            }
+
+            console.log(`   ✅ SMS stats complete: ${totalStatsCreated} created, ${totalStatsSkipped} skipped`);
+          } catch (smsErr) {
+            console.warn('   ⚠️ Failed to save SMS campaigns to DB (non-fatal):', smsErr.message || smsErr);
+          }
+        }
+
+        console.log(`✅ SMS-only sync complete for ${client.name}: ${smsCampaigns.length} SMS campaigns`);
+        
+        return {
+          success: true,
+          client: client.name,
+          smsCampaigns: smsCampaigns.length,
+          isSmsOnly: true
+        };
+      }
+
+      // ⚡⚡⚡ SPEED BOOST: Check if we have any data already (for regular clients)
       const hasExistingData = await prisma.mauticEmail.count({
         where: { clientId: client.id }
       }) > 0;
 
+      // ✅ CHECK: Skip SMS fetching if an SMS-only client exists with same URL
+      // This prevents Mautic sync from re-fetching SMS campaigns from deleted SMS client instances
+      const normalizedClientUrl = client.mauticUrl.trim().replace(/\/$/, '').toLowerCase();
+      const smsOnlyClientExists = await prisma.mauticClient.findFirst({
+        where: {
+          reportId: 'sms-only',
+          mauticUrl: {
+            // Case-insensitive URL matching
+            equals: normalizedClientUrl,
+            mode: 'insensitive'
+          }
+        },
+        select: { id: true, name: true }
+      });
+
+      const shouldSkipSms = !!smsOnlyClientExists;
+      if (shouldSkipSms) {
+        console.log(`⚠️  SKIPPING SMS FETCH: SMS-only client "${smsOnlyClientExists.name}" exists with same URL`);
+        console.log(`   This prevents re-fetching SMS campaigns that should be managed by SMS client only`);
+      }
+
       let emails = [];
       let campaigns = [];
       let segments = [];
+      let smsCampaigns = [];
 
       // Always fetch email metadata to keep sentCount and readCount up-to-date
       // The /api/emails endpoint is fast and doesn't require individual /api/stats calls
       // Only campaigns and segments are skipped on incremental sync (rarely change)
       if (!hasExistingData) {
         // Full initial sync: fetch all metadata
-        console.log(`🚀 INITIAL SYNC - Fetching metadata (emails/campaigns/segments)...`);
-        const results = await Promise.all([
+        console.log(`🚀 INITIAL SYNC - Fetching metadata (emails/campaigns/segments${shouldSkipSms ? '' : '/SMS'})...`);
+        const fetchTasks = [
           this.fetchEmails(client, false), // ⚡ FALSE = NO individual stats fetch!
           this.fetchCampaigns(client),
           this.fetchSegments(client)
-        ]);
+        ];
+        
+        // ✅ Only fetch SMS if no SMS-only client exists with same URL
+        if (!shouldSkipSms) {
+          fetchTasks.push(this.fetchSmses(client));
+        }
+        
+        const results = await Promise.all(fetchTasks);
         emails = results[0] || [];
         campaigns = results[1] || [];
         segments = results[2] || [];
+        smsCampaigns = shouldSkipSms ? [] : (results[3] || []);
       } else {
-        // Incremental sync: fetch emails (to update readCount/sentCount), skip campaigns/segments
-        console.log(`🔄 INCREMENTAL SYNC for ${client.name} — fetching emails to update stats...`);
-        emails = await this.fetchEmails(client, false);
-        console.log(`   ⚡ Fetched ${emails.length} emails for stats update`);
+        // Incremental sync: fetch emails AND SMS (to update stats), skip campaigns/segments
+        console.log(`🔄 INCREMENTAL SYNC for ${client.name} — fetching emails${shouldSkipSms ? '' : ' and SMS'} to update stats...`);
+        const fetchTasks = [this.fetchEmails(client, false)];
+        
+        // ✅ Only fetch SMS if no SMS-only client exists with same URL
+        if (!shouldSkipSms) {
+          fetchTasks.push(this.fetchSmses(client));
+        }
+        
+        const results = await Promise.all(fetchTasks);
+        emails = results[0] || [];
+        smsCampaigns = shouldSkipSms ? [] : (results[1] || []);
+        console.log(`   ⚡ Fetched ${emails.length} emails${shouldSkipSms ? '' : ` and ${smsCampaigns.length} SMS campaigns`} for stats update`);
       }
 
       // Persist emails to DB (upsert will update sentCount, readCount, etc.)
@@ -862,6 +968,74 @@ class MauticAPIService {
         console.log(`   ✅ Saved emails to DB: created=${saveRes.created} updated=${saveRes.updated}`);
       } catch (saveErr) {
         console.warn('   ⚠️ Failed to save fetched emails to DB (non-fatal):', saveErr.message || saveErr);
+      }
+
+      // ✅ Persist campaigns to DB (only on initial sync)
+      if (campaigns && campaigns.length > 0) {
+        try {
+          const { default: dataService } = await import('./dataService.js');
+          const campSaveRes = await dataService.saveCampaigns(client.id, campaigns);
+          console.log(`   ✅ Saved campaigns to DB: created=${campSaveRes.created} updated=${campSaveRes.updated}`);
+        } catch (campErr) {
+          console.warn('   ⚠️ Failed to save campaigns to DB (non-fatal):', campErr.message || campErr);
+        }
+      }
+
+      // ✅ Persist segments to DB (only on initial sync)
+      if (segments && segments.length > 0) {
+        try {
+          const { default: dataService } = await import('./dataService.js');
+          const segSaveRes = await dataService.saveSegments(client.id, segments);
+          console.log(`   ✅ Saved segments to DB: created=${segSaveRes.created} updated=${segSaveRes.updated}`);
+        } catch (segErr) {
+          console.warn('   ⚠️ Failed to save segments to DB (non-fatal):', segErr.message || segErr);
+        }
+      }
+
+      // ✅ Persist SMS campaigns to DB - With smart categorization
+      if (smsCampaigns && smsCampaigns.length > 0) {
+        try {
+          const { default: smsService } = await import('./smsService.js');
+
+          // Get all active Mautic clients for categorization (exclude sms-only clients)
+          const allMauticClients = await prisma.mauticClient.findMany({
+            where: {
+              isActive: true,
+              NOT: { reportId: 'sms-only' }
+            },
+            select: { id: true, name: true, reportId: true }
+          });
+
+          const smsSaveRes = await smsService.storeSmsForMauticClient(client.id, smsCampaigns, allMauticClients);
+          console.log(`   ✅ Saved SMS campaigns to DB: created=${smsSaveRes.created} updated=${smsSaveRes.updated} preserved=${smsSaveRes.preserved} categorized=${smsSaveRes.categorized}`);
+
+          // ✅ Fetch and store SMS stats for each campaign
+          console.log(`📊 Fetching SMS stats for ${smsCampaigns.length} campaigns...`);
+          let totalStatsCreated = 0;
+          let totalStatsSkipped = 0;
+
+          for (const sms of smsCampaigns) {
+            try {
+              // Find the local SMS record to get its ID
+              const localSms = await prisma.mauticSms.findUnique({
+                where: { mauticId: sms.id }
+              });
+
+              if (localSms) {
+                const statsResult = await this.fetchAndStoreSmsStats(client, localSms.id, sms.id);
+                totalStatsCreated += statsResult.created || 0;
+                totalStatsSkipped += statsResult.skipped || 0;
+                console.log(`   ✅ SMS "${sms.name}": ${statsResult.created} stats created, ${statsResult.skipped} skipped`);
+              }
+            } catch (statsErr) {
+              console.warn(`   ⚠️ Failed to fetch stats for SMS ${sms.id}:`, statsErr.message);
+            }
+          }
+
+          console.log(`   ✅ SMS stats complete: ${totalStatsCreated} created, ${totalStatsSkipped} skipped`);
+        } catch (smsErr) {
+          console.warn('   ⚠️ Failed to save SMS campaigns to DB (non-fatal):', smsErr.message || smsErr);
+        }
       }
 
       // Retrieve unique contact count from Mautic (avoid summing segment counts which may double-count)
@@ -880,7 +1054,7 @@ class MauticAPIService {
           if (segments && segments.length > 0) updateData.totalSegments = segments.length;
 
           await prisma.mauticClient.update({ where: { id: client.id }, data: updateData });
-          console.log(`   ✅ Updated client totals for ${client.name}: contacts=${uniqueContacts}, emails=${emails.length}, campaigns=${campaigns.length}, segments=${segments.length}`);
+          console.log(`   ✅ Updated client totals for ${client.name}: contacts=${uniqueContacts}, emails=${emails.length}, campaigns=${campaigns.length}, segments=${segments.length}, sms=${smsCampaigns.length}`);
         } catch (uErr) {
           console.warn('Failed to update mauticClient totals (non-fatal):', uErr.message || uErr);
         }
@@ -896,27 +1070,27 @@ class MauticAPIService {
       try {
         if (emails && emails.length > 0) {
           await this.fetchAllEmailClickStats(client, emails);
-          
+
           // Aggregate click trackables and update email records with clickedCount AND uniqueClicks
           console.log(`📊 Aggregating total clicks and unique clicks into email records...`);
           const emailIds = emails.map(e => parseInt(e.id, 10)).filter(Boolean);
           const clickAggregates = await prisma.mauticClickTrackable.groupBy({
             by: ['channelId'],
             where: { channelId: { in: emailIds }, clientId: client.id },
-            _sum: { 
+            _sum: {
               hits: true,        // Total clicks (clickedCount)
               uniqueHits: true   // Unique clicks
             }
           });
-          
+
           const clickMap = new Map(clickAggregates.map(agg => [
-            String(agg.channelId), 
+            String(agg.channelId),
             {
               clickedCount: parseInt(agg._sum.hits || 0, 10),
               uniqueClicks: parseInt(agg._sum.uniqueHits || 0, 10)
             }
           ]));
-          
+
           let updatedCount = 0;
           for (const email of emails) {
             const emailId = String(email.id);
@@ -924,7 +1098,7 @@ class MauticAPIService {
             if (clickData && (clickData.clickedCount > 0 || clickData.uniqueClicks > 0)) {
               try {
                 const sentCount = parseInt(email.sentCount || 0, 10);
-                const clickRate = sentCount > 0 
+                const clickRate = sentCount > 0
                   ? parseFloat(((clickData.clickedCount / sentCount) * 100).toFixed(2))
                   : 0;
 
@@ -933,7 +1107,7 @@ class MauticAPIService {
                     clientId: client.id,
                     mauticEmailId: String(emailId)
                   },
-                  data: { 
+                  data: {
                     clickedCount: clickData.clickedCount,
                     uniqueClicks: clickData.uniqueClicks,
                     clickRate: clickRate
@@ -958,6 +1132,7 @@ class MauticAPIService {
           emails,
           campaigns,
           segments,
+          smsCampaigns,
           emailReports: {
             totalRows: emailReportResult.totalRows,
             created: emailReportResult.created,
@@ -971,6 +1146,220 @@ class MauticAPIService {
         success: false,
         error: error.message
       };
+    }
+  }
+
+  /**
+   * Fetch all SMS campaigns from Mautic
+   * @param {Object} client - Client configuration
+   * @returns {Promise<Array>} Array of SMS campaign objects
+   */
+  async fetchSmses(client) {
+    try {
+      logger.info(`Fetching SMS campaigns from Mautic for client ${client.name}`);
+      const apiClient = this.createClient(client);
+
+      const response = await this.retryWithBackoff(() =>
+        apiClient.get('/smses', {
+          params: {
+            limit: 9999,
+            orderBy: 'id',
+            orderByDir: 'asc'
+          }
+        })
+      );
+
+      const smses = response.data?.smses || {};
+      const smsArray = Object.values(smses);
+
+      logger.info(`Fetched ${smsArray.length} SMS campaigns`);
+
+      // Return with all available fields from Mautic API
+      return smsArray.map(sms => ({
+        id: sms.id,
+        name: sms.name,
+        category: sms.category || null,
+        sentCount: sms.sentCount || 0,
+        language: sms.language || null,
+        message: sms.message || null,
+        createdBy: sms.createdBy || null,
+        createdByUser: sms.createdByUser || null,
+        dateAdded: sms.dateAdded || null,
+        dateModified: sms.dateModified || null
+      }));
+    } catch (error) {
+      logger.error(`Failed to fetch SMS campaigns:`, { error: error.message });
+      throw error;
+    }
+  }
+
+  /**
+   * Fetch SMS delivery statistics for a specific campaign and store in database
+   * Uses chunked fetching to handle large datasets
+   * @param {Object} client - Client configuration
+   * @param {number} localSmsId - Local SMS ID from mautic_sms table
+   * @param {number} mauticSmsId - Mautic SMS campaign ID
+   * @returns {Promise<Object>} SMS stats storage results
+   */
+  async fetchAndStoreSmsStats(client, localSmsId, mauticSmsId) {
+    try {
+      logger.info(`📊 Fetching SMS stats for campaign ${mauticSmsId} (local ID: ${localSmsId})`);
+      const apiClient = this.createClient(client);
+
+      let allStats = [];
+      let start = 0;
+      const limit = 5000; // Fetch in chunks to avoid timeout
+      let hasMore = true;
+      let fetchAttempts = 0;
+      const maxAttempts = 100; // Safety limit
+
+      // Fetch stats in chunks
+      while (hasMore && fetchAttempts < maxAttempts) {
+        fetchAttempts++;
+        
+        try {
+          logger.info(`   Fetching chunk ${fetchAttempts} (start: ${start}, limit: ${limit})...`);
+          
+          const response = await this.retryWithBackoff(() =>
+            apiClient.get('/stats/sms_message_stats', {
+              params: {
+                'where[0][col]': 'sms_id',
+                'where[0][expr]': 'eq',
+                'where[0][val]': mauticSmsId,
+                start: start,
+                limit: limit,
+                orderBy: 'date_sent',
+                orderByDir: 'desc'
+              }
+            })
+          );
+
+          // Log the raw response structure for debugging
+          logger.info(`   Response structure: ${JSON.stringify({
+            hasData: !!response.data,
+            hasStats: !!response.data?.stats,
+            statsType: Array.isArray(response.data?.stats) ? 'array' : typeof response.data?.stats,
+            statsLength: Array.isArray(response.data?.stats) ? response.data.stats.length : 'N/A',
+            total: response.data?.total || response.data?.totalResults || 'N/A',
+            sampleKeys: response.data?.stats ? Object.keys(Array.isArray(response.data.stats) ? (response.data.stats[0] || {}) : response.data.stats).slice(0, 5) : []
+          })}`);
+
+          // Handle both array and object responses
+          let stats = [];
+          if (Array.isArray(response.data?.stats)) {
+            stats = response.data.stats;
+          } else if (response.data?.stats && typeof response.data.stats === 'object') {
+            // Convert object to array
+            stats = Object.values(response.data.stats);
+          } else if (response.data?.data && Array.isArray(response.data.data)) {
+            // Some endpoints return data instead of stats
+            stats = response.data.data;
+          }
+
+          logger.info(`   Fetched ${stats.length} stats in this chunk`);
+
+          if (stats.length === 0) {
+            logger.info(`   No more stats to fetch (empty response)`);
+            hasMore = false;
+            break;
+          }
+
+          // Add to collection
+          allStats.push(...stats);
+
+          // Check if we should continue
+          const total = response.data?.total || response.data?.totalResults || 0;
+          if (stats.length < limit) {
+            // Got less than requested, we're done
+            logger.info(`   Received partial chunk (${stats.length} < ${limit}), stopping`);
+            hasMore = false;
+          } else if (total > 0 && allStats.length >= total) {
+            // Reached the total
+            logger.info(`   Reached total (${allStats.length} >= ${total}), stopping`);
+            hasMore = false;
+          } else {
+            // Continue to next chunk
+            start += stats.length;
+            logger.info(`   Continuing to next chunk (total so far: ${allStats.length})`);
+          }
+
+        } catch (chunkError) {
+          logger.error(`   Error fetching chunk ${fetchAttempts}:`, chunkError.message);
+          // If first chunk fails, throw error
+          if (fetchAttempts === 1) {
+            throw chunkError;
+          }
+          // Otherwise, stop fetching but process what we have
+          hasMore = false;
+        }
+      }
+
+      logger.info(`✅ Fetched total of ${allStats.length} SMS stats for campaign ${mauticSmsId}`);
+
+      // If no stats, return early
+      if (allStats.length === 0) {
+        logger.info(`⚠️  No SMS stats found for campaign ${mauticSmsId} - campaign may not have been sent yet`);
+        return { created: 0, skipped: 0, total: 0 };
+      }
+
+      // Log sample stat for debugging
+      if (allStats.length > 0) {
+        logger.info(`   Sample stat structure: ${JSON.stringify(allStats[0])}`);
+      }
+
+      // Store stats in database
+      const { default: smsService } = await import('./smsService.js');
+      const storeResult = await smsService.storeSmsStats(localSmsId, mauticSmsId, allStats);
+
+      logger.info(`✅ Stored SMS stats: ${storeResult.created} created, ${storeResult.skipped} skipped`);
+      return storeResult;
+
+    } catch (error) {
+      logger.error(`❌ Failed to fetch and store SMS stats for campaign ${mauticSmsId}:`, {
+        error: error.message,
+        stack: error.stack?.split('\n').slice(0, 3).join('\n')
+      });
+      return { created: 0, skipped: 0, total: 0, error: error.message };
+    }
+  }
+
+  /**
+   * Fetch contact SMS activity (on-demand, no storage)
+   * @param {Object} client - Client configuration
+   * @param {number} contactId - Mautic contact ID
+   * @param {number} smsId - Optional SMS campaign filter
+   * @returns {Promise<Array>} SMS activity events
+   */
+  async fetchContactSmsActivity(client, contactId, smsId = null) {
+    try {
+      logger.info(`Fetching SMS activity for contact ${contactId}`);
+      const apiClient = this.createClient(client);
+
+      const response = await this.retryWithBackoff(() =>
+        apiClient.get(`/contacts/${contactId}/activity`, {
+          params: { limit: 9999 }
+        })
+      );
+
+      const events = response.data?.events || [];
+
+      // Filter SMS-related events
+      let smsEvents = events.filter(e =>
+        e.event === 'sms.sent' || e.event === 'sms_reply'
+      );
+
+      // Filter by specific SMS campaign if provided
+      if (smsId) {
+        smsEvents = smsEvents.filter(e =>
+          e.details?.sms?.id === smsId || e.sms?.id === smsId
+        );
+      }
+
+      logger.info(`Found ${smsEvents.length} SMS events for contact ${contactId}`);
+      return smsEvents;
+    } catch (error) {
+      logger.error(`Failed to fetch SMS activity for contact ${contactId}:`, { error: error.message });
+      return [];
     }
   }
 }

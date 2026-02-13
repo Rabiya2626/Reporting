@@ -338,7 +338,7 @@ class MauticDataService {
 
         // Prepare valid records for batch insert
         const validRecords = [];
-        
+
         for (const row of batch) {
           // Skip invalid rows
           if (!row.e_id || !row.date_sent || !row.email_address || !row.subject1) {
@@ -590,6 +590,11 @@ class MauticDataService {
   async getClients() {
     try {
       const clients = await prisma.mauticClient.findMany({
+        where: {
+          // Include all clients (including SMS-only)
+          isActive: true,
+          // reportId: { not: 'sms-only' } // uncomment this if you want to hide SMS-only clients
+        },
         orderBy: [
           { isActive: 'desc' }, // Active clients first
           { name: 'asc' }

@@ -11,34 +11,37 @@ import { useDashboardMetrics, useClients, useSync } from '../../hooks/mautic';
 import MetricsCards from './MetricsCards';
 import ClientSelector from './ClientSelector';
 import CampaignsSection from './CampaignsSection';
-import EmailsSection from './EmailsSection'; // This shows Emails
+import EmailsSection from './EmailsSection';
 import SegmentsSection from './SegmentsSection';
 
 export default function MauticDashboard({ clientId = null, clientName = null, accessibleClientIds = null }) {
   // If clientId is provided (from ClientDashboard), use it and lock it
   const [selectedClientId, setSelectedClientId] = useState(clientId);
-  
+
   const [activeTab, setActiveTab] = useState('campaigns'); // 'campaigns', 'emails', 'segments'
-  
+
   const { clients, loading: clientsLoading, refetch: refetchClients } = useClients();
   const { metrics, loading, error, refetch } = useDashboardMetrics(selectedClientId || clientId);
   const { syncAllClients, syncClient, isSyncing } = useSync();
   const [refreshKey, setRefreshKey] = useState(Date.now());
-  
+
   // Hide client selector if clientId is provided (viewing single client)
   const isClientLocked = clientId !== null;
+
+  // filter out sms-only clients
+  const mauticOnlyClients = clients.filter(client => client.reportId !== 'sms-only');
 
   // Filter clients by accessible IDs if provided (for access control)
   // Memoize to prevent re-filtering on every parent render
   const accessibleClients = React.useMemo(() => {
     console.log("accessible clients ids", accessibleClientIds);
-    console.log("clients", clients);
-    
+    console.log("clients", mauticOnlyClients);
+
     if (!accessibleClientIds || accessibleClientIds.length === 0) {
       return clients || [];
     }
-    console.log("accessible clients", (clients || []).filter(c => accessibleClientIds.includes(c.id)));
-    return (clients || []).filter(c => accessibleClientIds.includes(c.id));
+    console.log("accessible clients", (mauticOnlyClients || []).filter(c => accessibleClientIds.includes(c.id)));
+    return (mauticOnlyClients || []).filter(c => accessibleClientIds.includes(c.id));
   }, [clients, accessibleClientIds]);
 
   const handleSync = async () => {
@@ -62,9 +65,9 @@ export default function MauticDashboard({ clientId = null, clientName = null, ac
     const result = selectedClientId
       ? await syncClient(selectedClientId)
       : await syncAllClients();
-    
+
     if (result.success) {
-      const message = result.data?.results 
+      const message = result.data?.results
         ? `Sync completed! ${result.data.results.successful}/${result.data.results.totalClients} clients synced successfully.`
         : result.message || 'Sync completed successfully!';
       toast.success(message, { autoClose: 5000 });
@@ -77,11 +80,6 @@ export default function MauticDashboard({ clientId = null, clientName = null, ac
 
   const handleClientChange = (clientId) => {
     setSelectedClientId(clientId);
-  };
-
-  const handleModalSuccess = () => {
-    refetchClients();
-    refetch();
   };
 
   // Listen to global sync-complete event (dispatched from Settings after sync)
@@ -129,7 +127,7 @@ export default function MauticDashboard({ clientId = null, clientName = null, ac
       )}
 
       {/* No Clients Warning */}
-      {clients.length === 0 && (
+      {mauticOnlyClients.length === 0 && (
         <div className="mb-6 bg-yellow-50 border border-yellow-200 rounded-lg p-6 text-center">
           <AlertCircle className="text-yellow-600 mx-auto mb-3" size={48} />
           <h3 className="text-lg font-semibold text-yellow-900 mb-2">No Autovation Clients Configured</h3>
@@ -153,23 +151,23 @@ export default function MauticDashboard({ clientId = null, clientName = null, ac
         <div className="flex items-center gap-4">
           {!isClientLocked && (
             <ClientSelector
-              clients={accessibleClientIds ? accessibleClients : clients}
+              clients={accessibleClientIds ? accessibleClients : mauticOnlyClients}
               selectedClientId={selectedClientId}
               onChange={handleClientChange}
             />
           )}
           {isClientLocked && clientName && (
             <div className="px-4 py-2 bg-blue-100 text-blue-800 rounded-lg font-medium">
-               Viewing: {clientName}
+              Viewing: {clientName}
             </div>
           )}
         </div>
-        
+
         <button
           onClick={handleSync}
-          disabled={isSyncing || clients.length === 0}
+          disabled={isSyncing || accessibleClients.length === 0}
           className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          title={clients.length === 0 ? 'Add a client first' : 'Sync data from Mautic (may take 1-3 minutes)'}
+          title={accessibleClients.length === 0 ? 'Add a client first' : 'Sync data from Mautic (may take 1-3 minutes)'}
         >
           <RefreshCw className={isSyncing ? 'animate-spin' : ''} size={16} />
           {isSyncing ? 'Syncing... Please wait' : 'Sync Now'}
@@ -177,7 +175,7 @@ export default function MauticDashboard({ clientId = null, clientName = null, ac
       </div>
 
       {/* Metrics Cards - Show for selected client OR all clients */}
-      {metrics && clients.length > 0 && (
+      {metrics && accessibleClients.length > 0 && (
         <>
           <MetricsCards metrics={metrics} accessibleClients={accessibleClients} selectedClientId={selectedClientId} />
 
