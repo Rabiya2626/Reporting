@@ -3,6 +3,7 @@ import express from "express";
 import mauticAPI from "../services/mauticAPI.js";
 import dataService from "../services/dataService.js";
 import statsService from "../services/statsService.js";
+import smsService from "../services/smsService.js";
 import MauticSchedulerService from "../services/schedulerService.js";
 import encryptionService from "../services/encryption.js";
 import prisma from "../../../prisma/client.js";
@@ -13,9 +14,13 @@ import {
 import DropCowboyDataService from "../../dropCowboy/services/dataService.js";
 import DropCowboyScheduler from "../../dropCowboy/services/schedulerService.js";
 import { authenticate, hasFullAccess, getAccessibleClientIds } from '../../../middleware/auth.js';
+import smsClientRoutes from './smsClient.js';
 
 const router = express.Router();
 const schedulerService = new MauticSchedulerService();
+
+// SMS Client routes
+router.use('/', smsClientRoutes);
 
 // Track ongoing sync operations
 let isSyncInProgress = false;
@@ -200,8 +205,8 @@ router.get("/clients/:clientId/segments", async (req, res) => {
     // Calculate total contacts across all segments
     const totalContacts = segments.reduce((sum, segment) => sum + (segment.contactCount || 0), 0);
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       data: segments,
       totalContacts: totalContacts,
       segmentCount: segments.length
@@ -233,6 +238,27 @@ router.get("/clients/:clientId/campaigns", async (req, res) => {
       .json({
         success: false,
         message: "Failed to fetch campaigns",
+        error: error.message,
+      });
+  }
+});
+
+// Get SMS campaigns for a specific Mautic client
+router.get("/clients/:clientId/sms", async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const smsCampaigns = await prisma.mauticSms.findMany({
+      where: { clientId: parseInt(clientId) },
+      orderBy: { id: 'asc' }
+    });
+    res.json({ success: true, data: smsCampaigns });
+  } catch (error) {
+    logger.error(error);
+    res
+      .status(500)
+      .json({
+        success: false,
+        message: "Failed to fetch SMS campaigns",
         error: error.message,
       });
   }
@@ -493,29 +519,43 @@ router.post("/clients", async (req, res) => {
       });
       logger.debug(`✨ Created new Mautic client: ${name} (ID: ${client.id})`);
 
-      // Start background month-by-month backfill (non-blocking)
-      // Calculate backfill range based on MAUTIC_HISTORICAL_MONTHS config
-      const historicalMonths = parseInt(process.env.MAUTIC_HISTORICAL_MONTHS || "12", 10);
-      const now = new Date();
-      const defaultFromDate = new Date(now.getFullYear(), now.getMonth() - historicalMonths, 1);
-      const backfillFrom = fromDate || defaultFromDate.toISOString().split('T')[0];
-      const backfillTo = toDate || now.toISOString().split('T')[0];
-      const pageLimit = limit || 5000; // default per-page limit; can be customized from frontend
-
-      // Run backfill in background so client creation returns immediately
+      // ✅ Start optimized background backfill immediately after client creation
+      // This is fast because:
+      // 1. Uses month-by-month pagination to avoid memory issues
+      // 2. Runs in background (non-blocking)
+      // 3. Skips already-fetched months
+      // 4. Prioritizes recent data (reverse chronological)
       setImmediate(async () => {
         try {
+          // Reassign orphaned SMS that match this client's name prefix
+          try {
+            const reassignedCount = await smsService.reassignOrphanedSms(client.id);
+            if (reassignedCount > 0) {
+              logger.info(`Reassigned ${reassignedCount} SMS campaigns to Mautic client "${name}"`);
+            }
+          } catch (reassignError) {
+            logger.error(`Failed to reassign SMS for client ${client.id}:`, reassignError);
+          }
+
+          // ✅ Optimized backfill: Fetch historical email reports
+          const historicalMonths = parseInt(process.env.MAUTIC_HISTORICAL_MONTHS || "12", 10);
+          const now = new Date();
+          const defaultFromDate = new Date(now.getFullYear(), now.getMonth() - historicalMonths, 1);
+          const backfillFrom = fromDate || defaultFromDate.toISOString().split('T')[0];
+          const backfillTo = toDate || now.toISOString().split('T')[0];
+          const pageLimit = limit || 5000;
+
           logger.debug(
-            `🔁 Starting background monthly backfill for client ${client.id} (${backfillFrom} → ${backfillTo}, ${historicalMonths} months)`
+            `🔁 Starting optimized backfill for client ${client.id} (${backfillFrom} → ${backfillTo}, ${historicalMonths} months)`
           );
 
-          // Helper to iterate months inclusive
+          // Helper to iterate months
           function monthsBetween(startISO, endISO) {
             const start = new Date(startISO);
             const end = new Date(endISO);
             const months = [];
             let y = start.getFullYear();
-            let m = start.getMonth() + 1; // 1-based
+            let m = start.getMonth() + 1;
             while (
               y < end.getFullYear() ||
               (y === end.getFullYear() && m <= end.getMonth() + 1)
@@ -531,24 +571,16 @@ router.post("/clients", async (req, res) => {
             return months;
           }
 
-          // Reverse month list so we fetch newest data first (priority-based syncing)
+          // Reverse to fetch newest data first
           const monthList = monthsBetween(backfillFrom, backfillTo).reverse();
-
-          const PAUSE_MS = parseInt(
-            process.env.MAUTIC_BACKFILL_PAUSE_MS || "2000",
-            10
-          );
-
-          async function sleep(ms) {
-            return new Promise((r) => setTimeout(r, ms));
-          }
+          const PAUSE_MS = parseInt(process.env.MAUTIC_BACKFILL_PAUSE_MS || "1000", 10);
 
           for (const mm of monthList) {
             const year = mm.year;
             const month = mm.month;
             const ym = `${year}-${String(month).padStart(2, "0")}`;
 
-            // Skip if month already fetched
+            // Skip if already fetched
             const existing = await prisma.mauticFetchedMonth.findFirst({
               where: { clientId: client.id, yearMonth: ym },
             });
@@ -557,9 +589,7 @@ router.post("/clients", async (req, res) => {
               continue;
             }
 
-            // Compute from/to for this month
             const from = `${ym}-01 00:00:00`;
-            // determine last day (respect final end date if same month)
             const lastDay = new Date(year, month, 0).getDate();
             let toDay = lastDay;
             const endDate = new Date(backfillTo);
@@ -567,7 +597,6 @@ router.post("/clients", async (req, res) => {
               endDate.getFullYear() === year &&
               endDate.getMonth() + 1 === month
             ) {
-              // Use provided end day (e.g., 25 for Nov 2025)
               toDay = Math.min(toDay, endDate.getDate());
             }
             const to = `${ym}-${String(toDay).padStart(2, "0")} 23:59:59`;
@@ -590,28 +619,26 @@ router.post("/clients", async (req, res) => {
               );
             }
 
-            // Small pause between months to reduce load and avoid overwhelming Mautic or this server
-            try {
-              await sleep(PAUSE_MS);
-            } catch (e) {
-              /* ignore */
-            }
+            // Small pause between months
+            await new Promise((r) => setTimeout(r, PAUSE_MS));
           }
 
           logger.debug(
-            `🔁 Background backfill finished for client ${client.id}`
+            `🔁 Optimized backfill finished for client ${client.id}`
           );
         } catch (bgErr) {
-          logger.error("Background backfill error:", bgErr.message);
+          logger.error("Background operations error:", bgErr.message);
         }
       });
+
+      logger.debug(`✅ Client created. Backfill running in background.`);
     }
 
     res.json({
       success: true,
       message:
-        "Mautic client created successfully" +
-        (mainClientId ? " and linked to main client" : ""),
+        "Mautic client created successfully. Historical data backfill started in background." +
+        (mainClientId ? " Client linked to main client." : ""),
       data: {
         ...client,
         password: undefined,
@@ -764,8 +791,8 @@ router.post("/clients/:id/backfill", async (req, res) => {
     const start = fromDate
       ? new Date(fromDate)
       : client.createdAt
-      ? new Date(client.createdAt)
-      : new Date(new Date().getFullYear(), 0, 1);
+        ? new Date(client.createdAt)
+        : new Date(new Date().getFullYear(), 0, 1);
     const end = toDate ? new Date(toDate) : new Date();
 
     // Respond quickly and run backfill in background
@@ -972,32 +999,24 @@ router.delete("/clients/:id/permanent", async (req, res) => {
     const clientName = existing.name;
     const linkedClientId = existing.clientId;
 
-    await prisma.$transaction(async (tx) => {
-      const deletedEmails = await tx.mauticEmail.deleteMany({ where: { clientId: clientId } });
-      const deletedReports = await tx.mauticEmailReport.deleteMany({ where: { clientId: clientId } });
-      const deletedCampaigns = await tx.mauticCampaign.deleteMany({ where: { clientId: clientId } });
-      const deletedSegments = await tx.mauticSegment.deleteMany({ where: { clientId: clientId } });
-      const deletedSyncLogs = await tx.mauticSyncLog.deleteMany({ where: { mauticClientId: clientId } });
-      const deletedMonths = await tx.mauticFetchedMonth.deleteMany({ where: { clientId: clientId } });
-      
-      logger.debug(`Deleted ${deletedEmails.count} emails, ${deletedReports.count} reports, ${deletedCampaigns.count} campaigns, ${deletedSegments.count} segments, ${deletedSyncLogs.count} sync logs, ${deletedMonths.count} fetched months`);
-      
-      await tx.mauticClient.delete({ where: { id: clientId } });
+    // Delete the MauticClient - cascade deletes will handle all related records automatically
+    // This is much faster than manual deletion and avoids transaction timeouts
+    await prisma.mauticClient.delete({ where: { id: clientId } });
 
-      if (linkedClientId) {
-        const otherMauticLinks = await tx.mauticClient.count({
+    // Handle linked client cleanup if needed
+    if (linkedClientId) {
+      const otherMauticLinks = await prisma.mauticClient.count({
+        where: { clientId: linkedClientId },
+      });
+      if (otherMauticLinks === 0) {
+        await prisma.dropCowboyCampaign.updateMany({
           where: { clientId: linkedClientId },
+          data: { clientId: null },
         });
-        if (otherMauticLinks === 0) {
-          await tx.dropCowboyCampaign.updateMany({
-            where: { clientId: linkedClientId },
-            data: { clientId: null },
-          });
-          await tx.client.delete({ where: { id: linkedClientId } });
-          logger.debug(`Deleted linked main client (ID: ${linkedClientId})`);
-        }
+        await prisma.client.delete({ where: { id: linkedClientId } });
+        logger.debug(`Deleted linked main client (ID: ${linkedClientId})`);
       }
-    });
+    }
 
     try {
       if (typeof logActivity === "function") {
@@ -1066,17 +1085,15 @@ router.patch("/clients/:id/toggle", async (req, res) => {
         data: { isActive: newStatus },
       });
       logger.debug(
-        `✓ ${newStatus ? "Activated" : "Deactivated"} linked client (ID: ${
-          mauticClient.clientId
+        `✓ ${newStatus ? "Activated" : "Deactivated"} linked client (ID: ${mauticClient.clientId
         })`
       );
     }
 
     res.json({
       success: true,
-      message: `Mautic service ${
-        newStatus ? "activated" : "deactivated"
-      } successfully`,
+      message: `Mautic service ${newStatus ? "activated" : "deactivated"
+        } successfully`,
       data: {
         ...mauticClient,
         password: undefined,
@@ -1164,14 +1181,27 @@ router.get("/dashboard", async (req, res) => {
 router.get("/stats/overview", authenticate, async (req, res) => {
   try {
     const { fromDate, toDate } = req.query;
-    
+
     // Get accessible client IDs for current user
     let clientIds = null;
     if (!hasFullAccess(req.user)) {
       const accessibleClientIds = await getAccessibleClientIds(req.user.id, req.user);
       clientIds = accessibleClientIds;
     }
-    
+
+    // ⚡ CRITICAL FIX: Filter out SMS-only clients to prevent duplicate email stats
+    // Even if user has access to SMS-only clients, exclude them from email stats
+    if (clientIds) {
+      const validClients = await prisma.mauticClient.findMany({
+        where: {
+          id: { in: clientIds },
+          reportId: { not: 'sms-only' }
+        },
+        select: { id: true }
+      });
+      clientIds = validClients.map(c => c.id);
+    }
+
     const result = await statsService.getApplicationStats({ fromDate, toDate, clientIds });
     res.json(result);
   } catch (error) {
@@ -1193,7 +1223,7 @@ router.get("/clients/:clientId/stats", async (req, res) => {
   try {
     const { clientId } = req.params;
     const { fromDate, toDate, includeCampaigns, page, limit } = req.query;
-    
+
     const result = await statsService.getClientStats(parseInt(clientId), {
       fromDate,
       toDate,
@@ -1201,11 +1231,11 @@ router.get("/clients/:clientId/stats", async (req, res) => {
       page: page ? parseInt(page) : 1,
       limit: limit ? parseInt(limit) : 20
     });
-    
+
     if (!result.success) {
       return res.status(404).json(result);
     }
-    
+
     res.json(result);
   } catch (error) {
     logger.error("Error fetching client stats:", error);
@@ -1226,18 +1256,18 @@ router.get("/campaigns/:campaignId/stats", async (req, res) => {
   try {
     const { campaignId } = req.params;
     const { fromDate, toDate, page, limit } = req.query;
-    
+
     const result = await statsService.getCampaignStats(parseInt(campaignId), {
       fromDate,
       toDate,
       page: page ? parseInt(page) : 1,
       limit: limit ? parseInt(limit) : 50
     });
-    
+
     if (!result.success) {
       return res.status(404).json(result);
     }
-    
+
     res.json(result);
   } catch (error) {
     logger.error("Error fetching campaign stats:", error);
@@ -1258,17 +1288,17 @@ router.get("/emails/:emailId/stats", async (req, res) => {
   try {
     const { emailId } = req.params;
     const { includeHistory, fromDate, toDate } = req.query;
-    
+
     const result = await statsService.getEmailStats(parseInt(emailId), {
       includeHistory: includeHistory === 'true',
       fromDate,
       toDate
     });
-    
+
     if (!result.success) {
       return res.status(404).json(result);
     }
-    
+
     res.json(result);
   } catch (error) {
     logger.error("Error fetching email stats:", error);
@@ -1563,7 +1593,7 @@ router.get("/sync/status", async (req, res) => {
       orderBy: { syncCompletedAt: 'desc' }
     });
     lastSyncAt = lastSync?.syncCompletedAt || null;
-    
+
     // If no sync log, check MauticClient lastSyncAt as fallback
     if (!lastSyncAt) {
       const client = await prisma.mauticClient.findFirst({
@@ -1644,8 +1674,19 @@ router.post("/sync/all", async (req, res) => {
         );
 
         // After successful Mautic sync, trigger DropCowboy data refresh to re-match clients
+        // ✅ Only if SFTP credentials are configured
         (async () => {
           try {
+            // Check if SFTP credentials exist before triggering DropCowboy sync
+            const sftpCred = await prisma.sFTPCredential.findFirst({
+              orderBy: { updatedAt: 'desc' }
+            });
+
+            if (!sftpCred || !sftpCred.host || !sftpCred.username || !sftpCred.password) {
+              logger.debug("⏭️  Skipping DropCowboy sync: No SFTP credentials configured");
+              return;
+            }
+
             logger.debug(
               "🔄 Triggering DropCowboy data refresh after Mautic sync..."
             );
@@ -1659,10 +1700,15 @@ router.post("/sync/all", async (req, res) => {
 
             // Trigger SFTP sync to re-fetch and re-match data to Mautic clients
             const syncResult = await dropCowboyScheduler.fetchAndProcessData();
-            logger.debug(
-              "DropCowboy SFTP sync completed after Mautic sync:",
-              syncResult
-            );
+            
+            if (syncResult.skipped) {
+              logger.debug(`⏭️  DropCowboy sync skipped: ${syncResult.reason}`);
+            } else {
+              logger.debug(
+                "DropCowboy SFTP sync completed after Mautic sync:",
+                syncResult
+              );
+            }
           } catch (syncError) {
             logger.error(
               "Failed to refresh DropCowboy data after Mautic sync:",
@@ -1781,9 +1827,20 @@ router.post("/sync/:clientId", async (req, res) => {
         );
 
         // After successful Mautic sync, trigger DropCowboy data refresh to re-match clients
+        // ✅ Only if SFTP credentials are configured
         if (result.success) {
           (async () => {
             try {
+              // Check if SFTP credentials exist before triggering DropCowboy sync
+              const sftpCred = await prisma.sFTPCredential.findFirst({
+                orderBy: { updatedAt: 'desc' }
+              });
+
+              if (!sftpCred || !sftpCred.host || !sftpCred.username || !sftpCred.password) {
+                logger.debug("⏭️  Skipping DropCowboy sync: No SFTP credentials configured");
+                return;
+              }
+
               logger.debug(
                 "🔄 Triggering DropCowboy data refresh after Mautic sync..."
               );
@@ -1798,10 +1855,15 @@ router.post("/sync/:clientId", async (req, res) => {
               // Trigger SFTP sync to re-fetch and re-match data to Mautic clients
               const syncResult =
                 await dropCowboyScheduler.fetchAndProcessData();
-              logger.debug(
-                "DropCowboy SFTP sync completed after Mautic sync:",
-                syncResult
-              );
+              
+              if (syncResult.skipped) {
+                logger.debug(`⏭️  DropCowboy sync skipped: ${syncResult.reason}`);
+              } else {
+                logger.debug(
+                  "DropCowboy SFTP sync completed after Mautic sync:",
+                  syncResult
+                );
+              }
             } catch (syncError) {
               logger.error(
                 "Failed to refresh DropCowboy data after Mautic sync:",
@@ -1840,6 +1902,137 @@ router.post("/sync/:clientId", async (req, res) => {
       message: "Failed to sync client",
       error: error.message,
     });
+  }
+});
+
+// ============================================
+// SMS CAMPAIGNS ROUTES
+// ============================================
+
+/**
+ * GET /api/mautic/smses
+ * Get all SMS campaigns (from all clients)
+ * Supports role-based access control
+ */
+router.get("/smses", authenticate, async (req, res) => {
+  try {
+    const accessibleClientIds = await getAccessibleClientIds(req);
+
+    const campaigns = await smsService.getAllSmsCampaigns(accessibleClientIds);
+
+    res.json({
+      success: true,
+      data: campaigns
+    });
+  } catch (error) {
+    logger.error("Failed to fetch SMS campaigns:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch SMS campaigns",
+      error: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/mautic/smses/:id/stats
+ * Get statistics for a specific SMS campaign
+ */
+router.get("/smses/:id/stats", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { page = 1, limit = 100 } = req.query;
+
+    const sms = await prisma.mauticSms.findUnique({
+      where: { id: parseInt(id) },
+      include: {
+        client: { select: { name: true } },
+        smsClient: { select: { name: true } }
+      }
+    });
+
+    if (!sms) {
+      return res.status(404).json({
+        success: false,
+        message: "SMS campaign not found"
+      });
+    }
+
+    const stats = await smsService.getCampaignStats(parseInt(id), {
+      page: parseInt(page),
+      limit: parseInt(limit)
+    });
+
+    res.json({
+      success: true,
+      data: {
+        campaignName: sms.name,
+        clientName: sms.client?.name || sms.smsClient?.name || 'Unknown',
+        ...stats
+      }
+    });
+  } catch (error) {
+    logger.error("Failed to fetch SMS stats:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch SMS statistics",
+      error: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/contact/:id
+ * Get contact activity (SMS messages and replies) from endpoint on-demand
+ */
+router.get("/contact/:id", async (req, res) => {
+  const { id } = req.params;
+  const { smsId } = req.query;
+
+  try {
+    // Find which client owns this smsId
+    const smsCampaign = await prisma.mauticSms.findUnique({
+      where: { mauticId: parseInt(smsId) },
+      include: { client: true }
+    });
+
+    if (!smsCampaign || !smsCampaign.client) {
+      return res.status(404).json({ error: "SMS campaign or client not found" });
+    }
+
+    // Create mautic client instance using that client's credentials
+    const apiClient = mauticAPI.createClient(smsCampaign.client);
+
+    // Fetch contact details + activity from Mautic
+    const [activityRes, contactRes] = await Promise.all([
+      apiClient.get(`/contacts/${id}/activity`),
+      apiClient.get(`/contacts/${id}`)
+    ]);
+
+    const contact = contactRes.data?.contact || {};
+    const events = activityRes.data?.events || [];
+
+    // Filter events
+    const filteredEvents = events.filter(
+      e =>
+        (e.event === "sms.sent" && e.details?.stat?.sms_id?.toString() === smsCampaign.mauticId.toString()) ||
+        e.event === "sms_reply"
+    );
+
+    const name = `${contact.fields?.core?.firstname?.value || ""} ${contact.fields?.core?.lastname?.value || ""}`.trim();
+    console.log(name);
+    console.log(filteredEvents);
+    
+
+    res.json({
+      id,
+      name: name || `Contact #${id}`,
+      events: filteredEvents
+    });
+
+  } catch (err) {
+    console.error("❌ Error fetching contact activity:", err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 

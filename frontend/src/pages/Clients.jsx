@@ -5,6 +5,7 @@ import { ArrowLeft } from "lucide-react";
 import ClientsDropCowboyDashboard from "../components/dropCowboy/ClientsDropCowboyDashboard";
 import MauticEmailsSection from "../components/mautic/MauticEmailsSection";
 import MauticCampaignsSection from "../components/mautic/MauticCampaignsSection";
+import MauticSmsSection from "../components/mautic/MauticSmsSection";
 import useViewLevel from "../zustand/useViewLevel";
 import ClientServicesSection from "../components/ClientServicesSection";
 import { usePermissions } from "../utils/permissions";
@@ -50,10 +51,10 @@ const Clients = () => {
 
             const mauticClients = (mauticRes.data?.data || []).map((c) => ({
                 ...c,
-                id: c.clientId || c.id,  // keep /api/clients ID for unified display and assignment
-                mauticApiId: c.id,       // store the actual Mautic system ID separately
+                id: c.clientId || c.id,
+                mauticApiId: c.id,
                 uniqueId: `mautic-${c.clientId || c.id}`,
-                services: ["mautic"],
+                services: c.reportId === 'sms-only' ? ["sms"] : ["mautic"], // SMS-only clients only have SMS service
             }));
 
             // Extract clients from DropCowboy campaigns
@@ -114,7 +115,34 @@ const Clients = () => {
                 }
             });
 
-            // Use only Mautic clients (which now include dropcowboy service when applicable)
+            // ✅ Process SMS and DropCowboy Services
+            // For each Mautic client, check if it has SMS campaigns or DropCowboy campaigns
+            for (const mauticClient of mauticClients) {
+                // Check DropCowboy
+                if (dropCowboyClientNames.has(mauticClient.name)) {
+                    if (!mauticClient.services.includes('dropcowboy')) {
+                        mauticClient.services.push('dropcowboy');
+                    }
+                }
+                
+                // Check SMS - use the MauticClient id (not mauticApiId) for the query
+                // mauticApiId is only used for Mautic API calls, not our database queries
+                try {
+                    const smsRes = await axios.get(`/api/mautic/clients/${mauticClient.mauticApiId}/sms`);
+                    const smsCampaigns = smsRes.data?.data || [];
+                    
+                    if (smsCampaigns.length > 0) {
+                        if (!mauticClient.services.includes('sms')) {
+                            mauticClient.services.push('sms');
+                        }
+                    }
+                } catch (err) {
+                    // Ignore errors - client might not have SMS campaigns
+                    console.debug(`No SMS campaigns for client ${mauticClient.name}:`, err.message);
+                }
+            }
+
+            // Use mauticClients directly (no need for separate smsOnlyClients array)
             let combinedClients = mauticClients;
 
             // For non-full-access users, restrict visibility based on permissions
@@ -131,9 +159,6 @@ const Clients = () => {
                     combinedClients = combinedClients.filter((c) => (c.assignments || []).some(a => (a.user?.id || a.userId) === user.id));
                 }
             }
-
-            // Display clients that have Mautic or DropCowboy service (all clients have at least mautic)
-            // No need to filter anymore since we only fetch Mautic clients and add dropcowboy service when applicable
 
             setClients(combinedClients);
         } catch (error) {
@@ -236,6 +261,10 @@ const Clients = () => {
 
     const openDropcowboyCampaigns = () => {
         setView("dropcowboy");
+    };
+
+    const openSmsCampaigns = () => {
+        setView("sms");
     };
 
     const openCampaignDetails = (campaign) => {
@@ -641,6 +670,7 @@ const Clients = () => {
                     goBackToClients={goBackToClients}
                     openMauticCampaigns={openMauticCampaigns}
                     openDropcowboyCampaigns={openDropcowboyCampaigns}
+                    openSmsCampaigns={openSmsCampaigns}
                 />
             )}
 
@@ -682,6 +712,15 @@ const Clients = () => {
 
                     <ClientsDropCowboyDashboard clientName={selectedClient.name} />
                 </div>
+            )}
+
+            {/* VIEW 6: SMS CAMPAIGNS LIST */}
+            {view === "sms" && selectedClient && (
+                <MauticSmsSection
+                    selectedClient={selectedClient}
+                    goBackToServices={goBackToServices}
+                    goBackToClients={goBackToClients}
+                />
             )}
 
             {/* Assign Modal */}

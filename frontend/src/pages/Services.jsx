@@ -17,6 +17,7 @@ import { MauticDashboard } from '../components/mautic';
 import VicidialDashboard from '../components/vicidial/pages/VicidialDashboard';
 import { useAuth } from '../contexts/AuthContext';
 import { usePermissions } from '../utils/permissions';
+import SmsSection from '../components/mautic/SmsSection';
 
 
 export default function Services() {
@@ -171,6 +172,18 @@ export default function Services() {
                             >
                                 <span>Telecalling</span>
                             </button>
+                            <button
+                                onClick={() => setSelectedService('sms')}
+                                className={`
+                  flex items-center gap-2 px-4 py-4 border-b-2 font-medium text-sm transition-colors
+                  ${selectedService === 'sms'
+                                        ? 'border-blue-500 text-blue-600'
+                                        : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                                    }
+                `}
+                            >
+                                <span>SMS</span>
+                            </button>
                         </nav>
                     </div>
                 </div>
@@ -186,6 +199,9 @@ export default function Services() {
                 )}
                 {selectedService === 'vicidial' && (
                     <VicidialDashboard accessibleClientIds={accessibleClientIds} />
+                )}
+                {selectedService === 'sms' && (
+                    <SmsSection accessibleClientIds={accessibleClientIds} />
                 )}
             </div>
         </div>
