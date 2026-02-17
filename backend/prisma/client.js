@@ -15,6 +15,7 @@ const prisma = new PrismaClient({
       url: process.env.DATABASE_URL,
     },
   },
+  
 });
 
 // Connection pool configuration via environment variables or defaults

@@ -18,6 +18,18 @@ class SchedulerService {
       // Download files from SFTP
       const downloadResult = await this.sftpService.downloadAllFiles();
       
+      // ✅ If SFTP was skipped (no credentials), return early with success
+      if (downloadResult.skipped) {
+        logger.debug(`⏭️  DropCowboy sync skipped: ${downloadResult.reason}`);
+        return {
+          success: true,
+          skipped: true,
+          reason: downloadResult.reason,
+          filesDownloaded: 0,
+          campaignsProcessed: 0
+        };
+      }
+      
       if (!downloadResult.success) {
         throw new Error('Failed to download files from SFTP');
       }

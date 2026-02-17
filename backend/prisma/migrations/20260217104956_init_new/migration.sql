@@ -300,6 +300,25 @@ CREATE TABLE `MauticEmailReport` (
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 -- CreateTable
+CREATE TABLE `MauticEmailReportAggregated` (
+    `id` INTEGER NOT NULL AUTO_INCREMENT,
+    `clientId` INTEGER NOT NULL,
+    `eId` INTEGER NOT NULL,
+    `date` DATE NOT NULL,
+    `sentCount` INTEGER NOT NULL DEFAULT 0,
+    `readCount` INTEGER NOT NULL DEFAULT 0,
+    `subject` VARCHAR(500) NULL,
+    `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `updatedAt` DATETIME(3) NOT NULL,
+
+    INDEX `MauticEmailReportAggregated_clientId_idx`(`clientId`),
+    INDEX `MauticEmailReportAggregated_eId_idx`(`eId`),
+    INDEX `MauticEmailReportAggregated_date_idx`(`date`),
+    UNIQUE INDEX `MauticEmailReportAggregated_clientId_eId_date_key`(`clientId`, `eId`, `date`),
+    PRIMARY KEY (`id`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- CreateTable
 CREATE TABLE `MauticClickTrackable` (
     `id` INTEGER NOT NULL AUTO_INCREMENT,
     `redirectId` VARCHAR(255) NOT NULL,
@@ -739,6 +758,9 @@ ALTER TABLE `MauticEmail` ADD CONSTRAINT `MauticEmail_clientId_fkey` FOREIGN KEY
 
 -- AddForeignKey
 ALTER TABLE `MauticEmailReport` ADD CONSTRAINT `MauticEmailReport_clientId_fkey` FOREIGN KEY (`clientId`) REFERENCES `MauticClient`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE `MauticEmailReportAggregated` ADD CONSTRAINT `MauticEmailReportAggregated_clientId_fkey` FOREIGN KEY (`clientId`) REFERENCES `MauticClient`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE `MauticClickTrackable` ADD CONSTRAINT `MauticClickTrackable_clientId_fkey` FOREIGN KEY (`clientId`) REFERENCES `MauticClient`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;

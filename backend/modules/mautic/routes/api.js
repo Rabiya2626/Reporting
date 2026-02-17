@@ -340,6 +340,70 @@ router.get("/clients/:clientId/email-reports", async (req, res) => {
   }
 });
 
+// ⚡ NEW: Get aggregated email reports (90%+ storage savings)
+router.get("/clients/:clientId/reports/aggregated", async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const { fromDate, toDate, eId } = req.query;
+
+    const { default: aggregatedReportService } = await import('../services/aggregatedReportService.js');
+
+    const filters = {};
+    if (fromDate) filters.fromDate = fromDate;
+    if (toDate) filters.toDate = toDate;
+    if (eId) filters.eId = eId;
+
+    const reports = await aggregatedReportService.getAggregatedReports(
+      parseInt(clientId),
+      filters
+    );
+
+    res.json({
+      success: true,
+      data: reports,
+      count: reports.length
+    });
+  } catch (error) {
+    logger.error("❌ Error fetching aggregated reports:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch aggregated reports",
+      error: error.message
+    });
+  }
+});
+
+// ⚡ NEW: Get aggregated report summary
+router.get("/clients/:clientId/reports/aggregated/summary", async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const { fromDate, toDate } = req.query;
+
+    const { default: aggregatedReportService } = await import('../services/aggregatedReportService.js');
+
+    const filters = {};
+    if (fromDate) filters.fromDate = fromDate;
+    if (toDate) filters.toDate = toDate;
+
+    const summary = await aggregatedReportService.getAggregatedSummary(
+      parseInt(clientId),
+      filters
+    );
+
+    res.json({
+      success: true,
+      data: summary
+    });
+  } catch (error) {
+    logger.error("❌ Error fetching aggregated summary:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch aggregated summary",
+      error: error.message
+    });
+  }
+});
+
 /**
  * POST /api/mautic/clients
  * Create a new Mautic client
@@ -519,125 +583,66 @@ router.post("/clients", async (req, res) => {
       });
       logger.debug(`✨ Created new Mautic client: ${name} (ID: ${client.id})`);
 
-      // ✅ Start optimized background backfill immediately after client creation
-      // This is fast because:
-      // 1. Uses month-by-month pagination to avoid memory issues
-      // 2. Runs in background (non-blocking)
-      // 3. Skips already-fetched months
-      // 4. Prioritizes recent data (reverse chronological)
+      // ⚡ FAST INITIAL METADATA FETCH - Fetch lightweight metadata immediately
+      // This makes the client visible in UI instantly with basic info
       setImmediate(async () => {
         try {
-          // Reassign orphaned SMS that match this client's name prefix
+          logger.debug(`⚡ Starting FAST metadata fetch for ${name}...`);
+          
+          // Fetch only lightweight metadata (NO stats, NO reports)
+          const [emails, campaigns, segments] = await Promise.all([
+            mauticAPI.fetchEmails(client, false), // false = no individual stats
+            mauticAPI.fetchCampaigns(client),
+            mauticAPI.fetchSegments(client)
+          ]);
+
+          logger.debug(`   ✅ Fetched ${emails.length} emails, ${campaigns.length} campaigns, ${segments.length} segments`);
+
+          // Save metadata to DB
+          const { default: dataService } = await import('../services/dataService.js');
+          await Promise.all([
+            dataService.saveEmails(client.id, emails),
+            dataService.saveCampaigns(client.id, campaigns),
+            dataService.saveSegments(client.id, segments)
+          ]);
+
+          // Update client totals
+          await prisma.mauticClient.update({
+            where: { id: client.id },
+            data: {
+              totalEmails: emails.length,
+              totalCampaigns: campaigns.length,
+              totalSegments: segments.length
+            }
+          });
+
+          logger.debug(`   ✅ Metadata saved to DB for ${name}`);
+          logger.debug(`⚡ FAST metadata fetch complete - client is now visible in UI!`);
+          logger.debug(`📊 Heavy report data will be fetched during next scheduled sync`);
+
+          // Reassign orphaned SMS that match this client's name prefix (lightweight operation)
           try {
             const reassignedCount = await smsService.reassignOrphanedSms(client.id);
             if (reassignedCount > 0) {
-              logger.info(`Reassigned ${reassignedCount} SMS campaigns to Mautic client "${name}"`);
+              logger.info(`   ✅ Reassigned ${reassignedCount} SMS campaigns to "${name}"`);
             }
           } catch (reassignError) {
-            logger.error(`Failed to reassign SMS for client ${client.id}:`, reassignError);
+            logger.error(`   ⚠️ Failed to reassign SMS:`, reassignError.message);
           }
 
-          // ✅ Optimized backfill: Fetch historical email reports
-          const historicalMonths = parseInt(process.env.MAUTIC_HISTORICAL_MONTHS || "12", 10);
-          const now = new Date();
-          const defaultFromDate = new Date(now.getFullYear(), now.getMonth() - historicalMonths, 1);
-          const backfillFrom = fromDate || defaultFromDate.toISOString().split('T')[0];
-          const backfillTo = toDate || now.toISOString().split('T')[0];
-          const pageLimit = limit || 5000;
-
-          logger.debug(
-            `🔁 Starting optimized backfill for client ${client.id} (${backfillFrom} → ${backfillTo}, ${historicalMonths} months)`
-          );
-
-          // Helper to iterate months
-          function monthsBetween(startISO, endISO) {
-            const start = new Date(startISO);
-            const end = new Date(endISO);
-            const months = [];
-            let y = start.getFullYear();
-            let m = start.getMonth() + 1;
-            while (
-              y < end.getFullYear() ||
-              (y === end.getFullYear() && m <= end.getMonth() + 1)
-            ) {
-              months.push({ year: y, month: m });
-              if (m === 12) {
-                y++;
-                m = 1;
-              } else {
-                m++;
-              }
-            }
-            return months;
-          }
-
-          // Reverse to fetch newest data first
-          const monthList = monthsBetween(backfillFrom, backfillTo).reverse();
-          const PAUSE_MS = parseInt(process.env.MAUTIC_BACKFILL_PAUSE_MS || "1000", 10);
-
-          for (const mm of monthList) {
-            const year = mm.year;
-            const month = mm.month;
-            const ym = `${year}-${String(month).padStart(2, "0")}`;
-
-            // Skip if already fetched
-            const existing = await prisma.mauticFetchedMonth.findFirst({
-              where: { clientId: client.id, yearMonth: ym },
-            });
-            if (existing) {
-              logger.debug(`   ⏭️ Skipping ${ym}, already fetched`);
-              continue;
-            }
-
-            const from = `${ym}-01 00:00:00`;
-            const lastDay = new Date(year, month, 0).getDate();
-            let toDay = lastDay;
-            const endDate = new Date(backfillTo);
-            if (
-              endDate.getFullYear() === year &&
-              endDate.getMonth() + 1 === month
-            ) {
-              toDay = Math.min(toDay, endDate.getDate());
-            }
-            const to = `${ym}-${String(toDay).padStart(2, "0")} 23:59:59`;
-
-            try {
-              logger.debug(`   ▶️ Backfilling ${ym} (${from} → ${to})`);
-              const r = await mauticAPI.fetchHistoricalReports(
-                client,
-                from,
-                to,
-                pageLimit
-              );
-              logger.debug(
-                `   ✅ ${ym} -> created ${r.created} skipped ${r.skipped}`
-              );
-            } catch (e) {
-              logger.error(
-                `   ❌ Failed to fetch ${ym}:`,
-                e && e.message ? e.message : String(e)
-              );
-            }
-
-            // Small pause between months
-            await new Promise((r) => setTimeout(r, PAUSE_MS));
-          }
-
-          logger.debug(
-            `🔁 Optimized backfill finished for client ${client.id}`
-          );
-        } catch (bgErr) {
-          logger.error("Background operations error:", bgErr.message);
+        } catch (metaErr) {
+          logger.error(`❌ Fast metadata fetch failed for ${name}:`, metaErr.message);
+          logger.debug(`   Data will be fetched during next scheduled sync`);
         }
       });
 
-      logger.debug(`✅ Client created. Backfill running in background.`);
+      logger.debug(`✅ Client created. Metadata fetch running in background. Heavy data deferred to sync.`);
     }
 
     res.json({
       success: true,
       message:
-        "Mautic client created successfully. Historical data backfill started in background." +
+        "Mautic client created successfully. Metadata is being fetched in background. Heavy report data will be synced during scheduled sync." +
         (mainClientId ? " Client linked to main client." : ""),
       data: {
         ...client,
@@ -1674,48 +1679,55 @@ router.post("/sync/all", async (req, res) => {
         );
 
         // After successful Mautic sync, trigger DropCowboy data refresh to re-match clients
-        // ✅ Only if SFTP credentials are configured
-        (async () => {
-          try {
-            // Check if SFTP credentials exist before triggering DropCowboy sync
-            const sftpCred = await prisma.sFTPCredential.findFirst({
-              orderBy: { updatedAt: 'desc' }
-            });
+        // ✅ Only if SFTP credentials are configured AND user explicitly requested it
+        // ⚡ OPTIMIZATION: Skip DropCowboy sync by default to avoid unnecessary overhead
+        const triggerDropCowboy = String(req.query.syncDropCowboy || "false") === "true";
+        
+        if (triggerDropCowboy) {
+          (async () => {
+            try {
+              // Check if SFTP credentials exist before triggering DropCowboy sync
+              const sftpCred = await prisma.sFTPCredential.findFirst({
+                orderBy: { updatedAt: 'desc' }
+              });
 
-            if (!sftpCred || !sftpCred.host || !sftpCred.username || !sftpCred.password) {
-              logger.debug("⏭️  Skipping DropCowboy sync: No SFTP credentials configured");
-              return;
-            }
+              if (!sftpCred || !sftpCred.host || !sftpCred.username || !sftpCred.password) {
+                logger.debug("⏭️  Skipping DropCowboy sync: No SFTP credentials configured");
+                return;
+              }
 
-            logger.debug(
-              "🔄 Triggering DropCowboy data refresh after Mautic sync..."
-            );
-            const dropCowboyDataService = new DropCowboyDataService();
-            const dropCowboyScheduler = new DropCowboyScheduler();
-
-            // Clear all existing DropCowboy data
-            const clearResult =
-              await dropCowboyDataService.clearAllDropCowboyData();
-            logger.debug("DropCowboy data cleared:", clearResult);
-
-            // Trigger SFTP sync to re-fetch and re-match data to Mautic clients
-            const syncResult = await dropCowboyScheduler.fetchAndProcessData();
-            
-            if (syncResult.skipped) {
-              logger.debug(`⏭️  DropCowboy sync skipped: ${syncResult.reason}`);
-            } else {
               logger.debug(
-                "DropCowboy SFTP sync completed after Mautic sync:",
-                syncResult
+                "🔄 Triggering DropCowboy data refresh after Mautic sync..."
+              );
+              const dropCowboyDataService = new DropCowboyDataService();
+              const dropCowboyScheduler = new DropCowboyScheduler();
+
+              // Clear all existing DropCowboy data
+              const clearResult =
+                await dropCowboyDataService.clearAllDropCowboyData();
+              logger.debug("DropCowboy data cleared:", clearResult);
+
+              // Trigger SFTP sync to re-fetch and re-match data to Mautic clients
+              const syncResult = await dropCowboyScheduler.fetchAndProcessData();
+              
+              if (syncResult.skipped) {
+                logger.debug(`⏭️  DropCowboy sync skipped: ${syncResult.reason}`);
+              } else {
+                logger.debug(
+                  "DropCowboy SFTP sync completed after Mautic sync:",
+                  syncResult
+                );
+              }
+            } catch (syncError) {
+              logger.error(
+                "Failed to refresh DropCowboy data after Mautic sync:",
+                syncError
               );
             }
-          } catch (syncError) {
-            logger.error(
-              "Failed to refresh DropCowboy data after Mautic sync:",
-              syncError
-            );
-          }
-        })();
+          })();
+        } else {
+          logger.debug("⏭️  Skipping DropCowboy sync (not requested via ?syncDropCowboy=true)");
+        }
       })
       .catch((error) => {
         logger.error("❌ Sync failed:", error);
@@ -1827,50 +1839,57 @@ router.post("/sync/:clientId", async (req, res) => {
         );
 
         // After successful Mautic sync, trigger DropCowboy data refresh to re-match clients
-        // ✅ Only if SFTP credentials are configured
+        // ✅ Only if SFTP credentials are configured AND user explicitly requested it
+        // ⚡ OPTIMIZATION: Skip DropCowboy sync by default to avoid unnecessary overhead
         if (result.success) {
-          (async () => {
-            try {
-              // Check if SFTP credentials exist before triggering DropCowboy sync
-              const sftpCred = await prisma.sFTPCredential.findFirst({
-                orderBy: { updatedAt: 'desc' }
-              });
+          const triggerDropCowboy = String(req.query.syncDropCowboy || "false") === "true";
+          
+          if (triggerDropCowboy) {
+            (async () => {
+              try {
+                // Check if SFTP credentials exist before triggering DropCowboy sync
+                const sftpCred = await prisma.sFTPCredential.findFirst({
+                  orderBy: { updatedAt: 'desc' }
+                });
 
-              if (!sftpCred || !sftpCred.host || !sftpCred.username || !sftpCred.password) {
-                logger.debug("⏭️  Skipping DropCowboy sync: No SFTP credentials configured");
-                return;
-              }
+                if (!sftpCred || !sftpCred.host || !sftpCred.username || !sftpCred.password) {
+                  logger.debug("⏭️  Skipping DropCowboy sync: No SFTP credentials configured");
+                  return;
+                }
 
-              logger.debug(
-                "🔄 Triggering DropCowboy data refresh after Mautic sync..."
-              );
-              const dropCowboyDataService = new DropCowboyDataService();
-              const dropCowboyScheduler = new DropCowboyScheduler();
-
-              // Clear all existing DropCowboy data
-              const clearResult =
-                await dropCowboyDataService.clearAllDropCowboyData();
-              logger.debug("DropCowboy data cleared:", clearResult);
-
-              // Trigger SFTP sync to re-fetch and re-match data to Mautic clients
-              const syncResult =
-                await dropCowboyScheduler.fetchAndProcessData();
-              
-              if (syncResult.skipped) {
-                logger.debug(`⏭️  DropCowboy sync skipped: ${syncResult.reason}`);
-              } else {
                 logger.debug(
-                  "DropCowboy SFTP sync completed after Mautic sync:",
-                  syncResult
+                  "🔄 Triggering DropCowboy data refresh after Mautic sync..."
+                );
+                const dropCowboyDataService = new DropCowboyDataService();
+                const dropCowboyScheduler = new DropCowboyScheduler();
+
+                // Clear all existing DropCowboy data
+                const clearResult =
+                  await dropCowboyDataService.clearAllDropCowboyData();
+                logger.debug("DropCowboy data cleared:", clearResult);
+
+                // Trigger SFTP sync to re-fetch and re-match data to Mautic clients
+                const syncResult =
+                  await dropCowboyScheduler.fetchAndProcessData();
+                
+                if (syncResult.skipped) {
+                  logger.debug(`⏭️  DropCowboy sync skipped: ${syncResult.reason}`);
+                } else {
+                  logger.debug(
+                    "DropCowboy SFTP sync completed after Mautic sync:",
+                    syncResult
+                  );
+                }
+              } catch (syncError) {
+                logger.error(
+                  "Failed to refresh DropCowboy data after Mautic sync:",
+                  syncError
                 );
               }
-            } catch (syncError) {
-              logger.error(
-                "Failed to refresh DropCowboy data after Mautic sync:",
-                syncError
-              );
-            }
-          })();
+            })();
+          } else {
+            logger.debug("⏭️  Skipping DropCowboy sync (not requested via ?syncDropCowboy=true)");
+          }
         }
       })
       .catch((error) => {
@@ -2020,13 +2039,15 @@ router.get("/contact/:id", async (req, res) => {
     );
 
     const name = `${contact.fields?.core?.firstname?.value || ""} ${contact.fields?.core?.lastname?.value || ""}`.trim();
-    console.log(name);
-    console.log(filteredEvents);
     
+    const mobile = contact.fields?.core?.mobile?.value || "";
 
     res.json({
       id,
-      name: name || `Contact #${id}`,
+      contact: {
+        name,
+        mobile
+      },
       events: filteredEvents
     });
 

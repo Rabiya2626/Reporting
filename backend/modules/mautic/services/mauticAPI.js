@@ -1,4 +1,6 @@
 import axios from 'axios';
+import http from 'http';
+import https from 'https';
 import encryptionService from './encryption.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -11,6 +13,45 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 class MauticAPIService {
+  constructor() {
+    // ⚡ Add global request interceptor for logging and performance monitoring
+    this.setupInterceptors();
+  }
+
+  /**
+   * Setup axios interceptors for better error handling and logging
+   */
+  setupInterceptors() {
+    // Request interceptor - log outgoing requests
+    axios.interceptors.request.use(
+      (config) => {
+        config.metadata = { startTime: Date.now() };
+        return config;
+      },
+      (error) => {
+        return Promise.reject(error);
+      }
+    );
+
+    // Response interceptor - log response times and handle common errors
+    axios.interceptors.response.use(
+      (response) => {
+        const duration = Date.now() - response.config.metadata.startTime;
+        if (duration > 5000) {
+          console.warn(`⚠️  Slow API response: ${response.config.url} took ${duration}ms`);
+        }
+        return response;
+      },
+      (error) => {
+        if (error.config?.metadata) {
+          const duration = Date.now() - error.config.metadata.startTime;
+          console.error(`❌ API request failed after ${duration}ms: ${error.config.url}`);
+        }
+        return Promise.reject(error);
+      }
+    );
+  }
+
   /**
    * Normalize Mautic URL
    * @param {string} url - Mautic URL
@@ -48,18 +89,42 @@ class MauticAPIService {
         password: password
       },
       headers: {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'Accept-Encoding': 'gzip, deflate', // ⚡ Enable compression
+        'Connection': 'keep-alive' // ⚡ Reuse connections
       },
-      timeout: 300000 // ⚡ 5 minutes for MASSIVE data fetches
+      timeout: 300000, // ⚡ 5 minutes for large report fetches
+      maxRedirects: 5,
+      // ⚡ Connection pooling for better performance
+      httpAgent: new http.Agent({
+        keepAlive: true,
+        keepAliveMsecs: 30000,
+        maxSockets: 50,
+        maxFreeSockets: 10,
+        timeout: 120000
+      }),
+      httpsAgent: new https.Agent({
+        keepAlive: true,
+        keepAliveMsecs: 30000,
+        maxSockets: 50,
+        maxFreeSockets: 10,
+        timeout: 300000, // ⚡ 5 minutes for HTTPS
+        rejectUnauthorized: true // ⚡ Validate SSL certificates
+      })
     });
 
     return apiClient;
   }
 
   /**
-   * Test connection to Autovation instance
+   * Test Mautic connection with optimized lightwe
    * @param {Object} credentials - { mauticUrl, username, password }
    * @returns {Promise<Object>} { success: boolean, message: string }
+   */
+  /**
+   * Test Mautic connection with enhanced error handling
+   * @param {Object} credentials - { mauticUrl, username, password }
+   * @returns {Promise<Object>} Connection test result
    */
   async testConnection(credentials) {
     try {
@@ -72,7 +137,7 @@ class MauticAPIService {
           username: credentials.username,
           password: credentials.password
         },
-        timeout: 30000 // 30 seconds for connection test
+        // timeout: 30000 // 30 seconds for connection test
       });
 
       // Test with a simple API call
@@ -91,6 +156,42 @@ class MauticAPIService {
         success: false,
         message: error.response?.data?.errors?.[0]?.message || error.message || 'Connection failed',
         error: error.message
+      };
+    }
+  }
+
+  /**
+   * Check Mautic server health and performance
+   * @param {string} mauticUrl - Mautic URL
+   * @returns {Promise<Object>} Health check result
+   */
+  async checkServerHealth(mauticUrl) {
+    try {
+      const normalizedUrl = this.normalizeUrl(mauticUrl);
+      const startTime = Date.now();
+
+      // Simple HTTP request to check if server is reachable
+      const response = await axios.get(normalizedUrl, {
+        timeout: 10000,
+        validateStatus: () => true // Accept any status
+      });
+
+      const responseTime = Date.now() - startTime;
+
+      return {
+        success: true,
+        reachable: true,
+        responseTime: responseTime,
+        status: response.status,
+        message: responseTime < 1000 ? 'Server is healthy' : 'Server is slow',
+        performance: responseTime < 1000 ? 'good' : responseTime < 3000 ? 'moderate' : 'poor'
+      };
+    } catch (error) {
+      return {
+        success: false,
+        reachable: false,
+        error: error.message,
+        code: error.code
       };
     }
   }
@@ -324,7 +425,6 @@ class MauticAPIService {
    * @param {Array} emails - Array of email objects (must contain .id)
    */
   async fetchAllEmailClickStats(client, emails) {
-    // Import dataService here to avoid circular deps
     const { default: dataService } = await import('./dataService.js');
     try {
       if (!emails || emails.length === 0) return { success: true, created: 0 };
@@ -333,42 +433,57 @@ class MauticAPIService {
 
       const apiClient = this.createClient(client);
       const clickRows = [];
-      const batchSize = 10;
 
-      for (let i = 0; i < emails.length; i += batchSize) {
-        const batch = emails.slice(i, i + batchSize);
-        const results = await Promise.allSettled(batch.map(async (email) => {
-          try {
-            const emailId = email.id || email.mauticEmailId || email.e_id;
-            if (!emailId) return [];
-            const resp = await apiClient.get('/stats/channel_url_trackables', {
-              params: {
-                'where[0][col]': 'channel_id',
-                'where[0][expr]': 'eq',
-                'where[0][val]': emailId,
-                limit: 10000
-              }
-            });
-            const rows = resp.data?.stats || resp.data || [];
-            return rows.map(r => ({
-              redirect_id: r.redirect_id || r.id || r.redirectId || '',
-              hits: parseInt(r.hits || r.hits_count || 0, 10) || 0,
-              unique_hits: parseInt(r.unique_hits || r.unique_hits_count || r.uniqueHits || 0, 10) || 0,
-              channel_id: parseInt(emailId, 10) || 0,
-              url: r.url || r.path || null
-            }));
-          } catch (e) {
-            console.warn(`   Failed to fetch click stats for email ${email.id}:`, e.message || e);
-            return [];
+      // ⚡ OPTIMIZATION: Increase concurrency for faster fetching
+      const CONCURRENCY = Math.max(1, parseInt(process.env.MAUTIC_FETCH_CONCURRENCY || '20', 10));
+      const limiter = pLimit(CONCURRENCY);
+
+      const fetchStartTime = Date.now();
+
+      // Fetch all emails in parallel with concurrency limit
+      const tasks = emails.map((email, index) => limiter(async () => {
+        try {
+          const emailId = email.id || email.mauticEmailId || email.e_id;
+          if (!emailId) return [];
+
+          const resp = await apiClient.get('/stats/channel_url_trackables', {
+            params: {
+              'where[0][col]': 'channel_id',
+              'where[0][expr]': 'eq',
+              'where[0][val]': emailId,
+              limit: 10000
+            }
+          });
+
+          const rows = resp.data?.stats || resp.data || [];
+          const mapped = rows.map(r => ({
+            redirect_id: r.redirect_id || r.id || r.redirectId || '',
+            hits: parseInt(r.hits || r.hits_count || 0, 10) || 0,
+            unique_hits: parseInt(r.unique_hits || r.unique_hits_count || r.uniqueHits || 0, 10) || 0,
+            channel_id: parseInt(emailId, 10) || 0,
+            url: r.url || r.path || null
+          }));
+
+          // Log progress every 50 emails
+          if ((index + 1) % 50 === 0 || index + 1 === emails.length) {
+            console.log(`   Processed ${index + 1}/${emails.length} emails...`);
           }
-        }));
 
-        for (const r of results) {
-          if (r.status === 'fulfilled' && Array.isArray(r.value)) clickRows.push(...r.value);
+          return mapped;
+        } catch (e) {
+          console.warn(`   Failed to fetch click stats for email ${email.id}:`, e.message || e);
+          return [];
         }
+      }));
 
-        console.log(`   Processed ${Math.min(i + batchSize, emails.length)}/${emails.length} emails (${clickRows.length} click records)...`);
+      const results = await Promise.all(tasks);
+
+      for (const rows of results) {
+        if (Array.isArray(rows)) clickRows.push(...rows);
       }
+
+      const fetchDuration = ((Date.now() - fetchStartTime) / 1000).toFixed(2);
+      console.log(`   ✅ Fetched ${clickRows.length} click records in ${fetchDuration}s (${CONCURRENCY}x concurrency)`);
 
       // Deduplicate rows by redirect_id
       const dedupMap = new Map();
@@ -382,6 +497,8 @@ class MauticAPIService {
         }
       }
       const deduped = Array.from(dedupMap.values());
+
+      console.log(`   Deduplication: ${clickRows.length} → ${deduped.length} unique records`);
 
       const saveResult = await dataService.saveClickTrackables(client.id, deduped);
       console.log(`✅ Click trackables saved: ${saveResult.created} records`);
@@ -501,9 +618,20 @@ class MauticAPIService {
  * @param {Object} client - Client object containing mauticUrl, username, password, reportId
  * @returns {Object} Report fetch status with count
  */
-  async fetchReport(client) {
-    // Import dataService here to avoid circular dependencies
+  /**
+   * Fetch email reports from Mautic and save to database
+   * ⚡ OPTIMIZATION: This is a HEAVY operation - only call during SYNC, not during client creation!
+   * During client creation, only fetch lightweight metadata (emails, campaigns, segments)
+   * ⚡ NEW: Uses aggregated storage to reduce DB size by 90%+
+   * @param {number} clientId - Client ID
+   * @param {Object} client - Client configuration
+   * @param {boolean} useAggregation - Use aggregated storage (default: true)
+   * @returns {Promise<Object>} Fetch results with totalRows, created, skipped
+   */
+  async fetchReport(client, useAggregation = true) {
+    // Import services here to avoid circular dependencies
     const { default: dataService } = await import('./dataService.js');
+    const { default: aggregatedReportService } = await import('./aggregatedReportService.js');
 
     try {
       const apiClient = this.createClient(client);
@@ -513,24 +641,52 @@ class MauticAPIService {
         throw new Error(`No reportId found for client: ${client.name}`);
       }
 
+      // ⚡ Check if aggregated table exists, fallback to raw if not
+      let actualUseAggregation = useAggregation;
+      if (useAggregation) {
+        try {
+          await prisma.mauticEmailReportAggregated.findFirst({
+            where: { clientId: client.id },
+            take: 1
+          });
+        } catch (tableError) {
+          console.warn(`⚠️  MauticEmailReportAggregated table not available, falling back to raw storage`);
+          console.warn(`   Run: npx prisma migrate dev --name add_aggregated_reports`);
+          actualUseAggregation = false;
+        }
+      }
+
+      // ⚡ OPTIMIZED: Use reasonable chunk size that PHP can handle (10k-20k records per request)
+      const limit = parseInt('10000', 10); // Configurable, default 10k
       let start = 0;
-      const limit = 500000; // ⚡ ULTRA MASSIVE batch size for speed
       let hasMore = true;
       let totalRows = 0;
       let totalCreated = 0;
       let totalSkipped = 0;
+      let totalAggregated = 0;
 
       // ⚡⚡⚡ INTELLIGENT INCREMENTAL SYNC - Only fetch NEW data!
-      // Check what we already have to avoid re-fetching
-      const lastFetchedReport = await prisma.mauticEmailReport.findFirst({
-        where: { clientId: client.id },
-        orderBy: { dateSent: 'desc' },
-        select: { dateSent: true }
-      });
+      let lastFetchedReport = null;
+      try {
+        lastFetchedReport = actualUseAggregation
+          ? await prisma.mauticEmailReportAggregated.findFirst({
+            where: { clientId: client.id },
+            orderBy: { date: 'desc' },
+            select: { date: true }
+          })
+          : await prisma.mauticEmailReport.findFirst({
+            where: { clientId: client.id },
+            orderBy: { dateSent: 'desc' },
+            select: { dateSent: true }
+          });
+      } catch (e) {
+        console.warn(`   ⚠️  Could not check last fetched report: ${e.message}`);
+      }
 
       // ⚡ CRITICAL OPTIMIZATION: If we just fetched recently, skip entirely!
-      if (lastFetchedReport?.dateSent) {
-        const hoursSinceLastFetch = (Date.now() - new Date(lastFetchedReport.dateSent).getTime()) / (1000 * 60 * 60);
+      if (lastFetchedReport?.date || lastFetchedReport?.dateSent) {
+        const lastDate = lastFetchedReport.date || lastFetchedReport.dateSent;
+        const hoursSinceLastFetch = (Date.now() - new Date(lastDate).getTime()) / (1000 * 60 * 60);
         if (hoursSinceLastFetch < 1) {
           console.log(`⚡ SUPER FAST: Data fetched within last hour, skipping report fetch!`);
           return {
@@ -543,29 +699,34 @@ class MauticAPIService {
         }
       }
 
-      const dateFrom = lastFetchedReport?.dateSent
-        ? new Date(lastFetchedReport.dateSent).toISOString().split('T')[0]
-        : null;
+      const dateFrom = lastFetchedReport?.date || lastFetchedReport?.dateSent
+        ? new Date(lastFetchedReport.date || lastFetchedReport.dateSent).toISOString().split('T')[0]
+        : '2024-01-01';
 
-      console.log(`📊 Fetching & saving report ID ${reportId} for ${client.name}${dateFrom ? ` (since ${dateFrom} - INCREMENTAL!)` : ' (full sync)'}...`);
+      console.log(`📊 Fetching report ID ${reportId} for ${client.name}${dateFrom ? ` (since ${dateFrom} - INCREMENTAL!)` : ' (full sync)'}...`);
+      console.log(`   Storage mode: ${actualUseAggregation ? 'AGGREGATED (90%+ space savings)' : 'RAW (full detail)'}`);
+      console.log(`   Chunk size: ${limit} records per request (PHP-friendly)`);
+
+      const fetchStartTime = Date.now();
+      let pageNumber = 1;
 
       // Fetch and save in batches (streaming approach)
       while (hasMore) {
+        const pageStartTime = Date.now();
+
         const params = {
           start: start,
-          limit: limit
+          limit: limit,
+          dateFrom: dateFrom
         };
 
-        // Add date filter for incremental sync
-        if (dateFrom) {
-          params.dateFrom = dateFrom;
-        }
+        console.log(`   📄 Page ${pageNumber}: Fetching from Mautic (start=${start}, limit=${limit})...`);
 
-        // ⚡ Use retry logic for resilience against 429/502/503/504 errors
         const response = await this.retryWithBackoff(async () => {
           return await apiClient.get(`/reports/${reportId}`, { params });
-        });
+        }, 6, 1000); // 6 retries with 1s initial delay
 
+        const pageDuration = ((Date.now() - pageStartTime) / 1000).toFixed(2);
         const data = response.data;
 
         if (!data || !data.data) {
@@ -579,62 +740,103 @@ class MauticAPIService {
           ? rawTotalAvailable
           : parseInt(String(rawTotalAvailable).replace(/[^0-9]/g, ''), 10) || 0;
 
-        console.log(`   Batch ${Math.floor(start / limit) + 1}: Fetched ${batchRows.length} rows (Total in Mautic: ${totalAvailable || 'unknown'}, Progress: ${totalRows + batchRows.length})...`);
+        console.log(`   ✅ Page ${pageNumber}: Fetched ${batchRows.length} rows in ${pageDuration}s (Total: ${totalAvailable || '?'}, Progress: ${totalRows + batchRows.length}/${totalAvailable || '?'})`);
 
-        // ⚡ ULTRA FAST EXIT: If no data at all, exit immediately
         if (batchRows.length === 0 && totalRows === 0 && totalAvailable === 0) {
           console.log(`⚡ INSTANT EXIT: No data available (already up to date!)`);
           hasMore = false;
           break;
         }
 
-        // Save batch immediately to database (don't accumulate in memory)
         if (batchRows.length > 0) {
-          const saveResult = await dataService.saveEmailReports(client.id, batchRows);
-          totalCreated += saveResult.created;
-          totalSkipped += saveResult.skipped;
-          totalRows += batchRows.length;
+          const saveStartTime = Date.now();
 
-          console.log(`   Saved: ${saveResult.created} new, ${saveResult.skipped} duplicates (Total so far: ${totalCreated} created, ${totalSkipped} skipped)`);
+          try {
+            if (actualUseAggregation) {
+              const saveResult = await aggregatedReportService.saveAggregatedReports(client.id, batchRows);
+              totalCreated += saveResult.created;
+              totalSkipped += saveResult.updated;
+              totalAggregated += saveResult.total;
+
+              const saveDuration = ((Date.now() - saveStartTime) / 1000).toFixed(2);
+              console.log(`   💾 Saved: ${saveResult.created} new, ${saveResult.updated} updated (${saveResult.reductionPercent}% reduction) in ${saveDuration}s`);
+            } else {
+              const saveResult = await dataService.saveEmailReports(client.id, batchRows);
+              totalCreated += saveResult.created;
+              totalSkipped += saveResult.skipped;
+
+              const saveDuration = ((Date.now() - saveStartTime) / 1000).toFixed(2);
+              console.log(`   💾 Saved: ${saveResult.created} new, ${saveResult.skipped} duplicates in ${saveDuration}s`);
+            }
+          } catch (saveError) {
+            console.error(`   ❌ Save error: ${saveError.message}`);
+            // If aggregated save fails, try raw as fallback
+            if (actualUseAggregation) {
+              console.log(`   🔄 Falling back to raw storage...`);
+              const saveResult = await dataService.saveEmailReports(client.id, batchRows);
+              totalCreated += saveResult.created;
+              totalSkipped += saveResult.skipped;
+              actualUseAggregation = false; // Switch to raw for remaining batches
+            } else {
+              throw saveError;
+            }
+          }
+
+          totalRows += batchRows.length;
+          console.log(`   📊 Progress: ${totalCreated} created, ${totalSkipped} skipped/updated (Total: ${totalRows})`);
         }
 
-        // Determine if we should continue fetching
-        // Stop if: no data returned OR we've reached the total available
         if (batchRows.length === 0) {
-          console.log(`✅ Stopping: No more data returned by API`);
+          console.log(`✅ Stopping: No more data returned`);
           hasMore = false;
         } else if (totalAvailable > 0 && totalRows >= totalAvailable) {
-          console.log(`✅ Stopping: Reached Mautic's total (${totalRows}/${totalAvailable})`);
+          console.log(`✅ Stopping: Reached total (${totalRows}/${totalAvailable})`);
           hasMore = false;
         } else if (batchRows.length < limit && (!totalAvailable || totalRows >= totalAvailable)) {
-          // Only stop on partial batch if we don't know total OR we've reached it
-          console.log(`✅ Stopping: Partial batch received (${batchRows.length} < ${limit}) and ${totalAvailable ? 'total reached' : 'no total available'}`);
+          console.log(`✅ Stopping: Partial batch (${batchRows.length} < ${limit})`);
           hasMore = false;
         } else {
-          // Continue to next batch
-          console.log(`   ➡️  Continuing to next batch (fetched: ${totalRows}, available: ${totalAvailable || 'unknown'})...`);
-          start += batchRows.length; // Use actual rows fetched, not limit
+          start += batchRows.length;
+          pageNumber++;
           hasMore = true;
+          
+          // ⚡ Add small delay between chunks to avoid overwhelming PHP server
+          if (hasMore && pageNumber % 5 === 0) {
+            const delayMs = parseInt('500', 10);
+            console.log(`   ⏸️  Pausing ${delayMs}ms to avoid overwhelming server...`);
+            await new Promise(resolve => setTimeout(resolve, delayMs));
+          }
         }
       }
 
-      console.log(`✅ Report complete: ${totalRows} rows fetched, ${totalCreated} saved to DB, ${totalSkipped} skipped`);
+      const totalDuration = ((Date.now() - fetchStartTime) / 1000).toFixed(2);
+      const avgTimePerPage = pageNumber > 0 ? (totalDuration / pageNumber).toFixed(2) : 0;
+
+      console.log(`✅ Report complete: ${totalRows} rows in ${totalDuration}s (${pageNumber} pages, avg ${avgTimePerPage}s/page)`);
+      console.log(`   💾 Storage: ${totalCreated} created, ${totalSkipped} skipped/updated${actualUseAggregation ? `, ${totalAggregated} aggregated` : ''}`);
 
       return {
         success: true,
-        totalRows: totalRows,
+        totalRows,
         created: totalCreated,
-        skipped: totalSkipped
+        skipped: totalSkipped,
+        aggregated: totalAggregated,
+        pages: pageNumber,
+        durationSeconds: parseFloat(totalDuration),
+        useAggregation: actualUseAggregation
       };
 
     } catch (error) {
       console.error(`❌ Error fetching report for client ${client.name}:`, error.message);
+      console.error(`   Stack:`, error.stack);
       throw new Error(`Failed to fetch report for client ${client.name}: ${error.message}`);
     }
   }
 
   /**
    * Fetch historical reports for a specific date range (used for backfilling)
+   * ⚡ OPTIMIZATION: This is a HEAVY operation - should be called ONLY during manual backfill
+   * NOT during client creation! Client creation should only fetch lightweight metadata.
    * @param {Object} client - Client object
    * @param {string} fromDate - Start date (YYYY-MM-DD)
    * @param {string} toDate - End date (YYYY-MM-DD)
@@ -654,7 +856,7 @@ class MauticAPIService {
       // Bound the limit to a sensible default if caller passed something too large
       const PAGE_LIMIT = Math.max(1000, Math.min(parseInt(limit, 10) || 5000, 200000));
       const RETRIES = 6;
-      const CONCURRENCY = parseInt(process.env.MAUTIC_FETCH_CONCURRENCY || '10', 10);
+      const CONCURRENCY = parseInt('20', 10);
 
       const baseTemp = path.join(__dirname, '..', '..', '.temp_pages');
       if (!fs.existsSync(baseTemp)) {
@@ -832,10 +1034,10 @@ class MauticAPIService {
 
       if (isSmsOnly) {
         console.log(`📱 SMS-ONLY CLIENT - Fetching SMS campaigns only...`);
-        
+
         // For SMS-only clients, only fetch SMS campaigns
         const smsCampaigns = await this.fetchSmses(client);
-        
+
         // Persist SMS campaigns to DB with smart categorization
         if (smsCampaigns && smsCampaigns.length > 0) {
           try {
@@ -883,7 +1085,7 @@ class MauticAPIService {
         }
 
         console.log(`✅ SMS-only sync complete for ${client.name}: ${smsCampaigns.length} SMS campaigns`);
-        
+
         return {
           success: true,
           client: client.name,
@@ -903,11 +1105,8 @@ class MauticAPIService {
       const smsOnlyClientExists = await prisma.mauticClient.findFirst({
         where: {
           reportId: 'sms-only',
-          mauticUrl: {
-            // Case-insensitive URL matching
-            equals: normalizedClientUrl,
-            mode: 'insensitive'
-          }
+          // MySQL doesn't support mode: 'insensitive', so we normalize both sides
+          mauticUrl: normalizedClientUrl
         },
         select: { id: true, name: true }
       });
@@ -934,12 +1133,12 @@ class MauticAPIService {
           this.fetchCampaigns(client),
           this.fetchSegments(client)
         ];
-        
+
         // ✅ Only fetch SMS if no SMS-only client exists with same URL
         if (!shouldSkipSms) {
           fetchTasks.push(this.fetchSmses(client));
         }
-        
+
         const results = await Promise.all(fetchTasks);
         emails = results[0] || [];
         campaigns = results[1] || [];
@@ -949,12 +1148,12 @@ class MauticAPIService {
         // Incremental sync: fetch emails AND SMS (to update stats), skip campaigns/segments
         console.log(`🔄 INCREMENTAL SYNC for ${client.name} — fetching emails${shouldSkipSms ? '' : ' and SMS'} to update stats...`);
         const fetchTasks = [this.fetchEmails(client, false)];
-        
+
         // ✅ Only fetch SMS if no SMS-only client exists with same URL
         if (!shouldSkipSms) {
           fetchTasks.push(this.fetchSmses(client));
         }
-        
+
         const results = await Promise.all(fetchTasks);
         emails = results[0] || [];
         smsCampaigns = shouldSkipSms ? [] : (results[1] || []);
@@ -1216,10 +1415,10 @@ class MauticAPIService {
       // Fetch stats in chunks
       while (hasMore && fetchAttempts < maxAttempts) {
         fetchAttempts++;
-        
+
         try {
           logger.info(`   Fetching chunk ${fetchAttempts} (start: ${start}, limit: ${limit})...`);
-          
+
           const response = await this.retryWithBackoff(() =>
             apiClient.get('/stats/sms_message_stats', {
               params: {

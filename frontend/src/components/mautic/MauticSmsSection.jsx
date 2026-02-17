@@ -9,6 +9,7 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
     const [messages, setMessages] = useState([]);
     const [selectedLead, setSelectedLead] = useState(null);
     const [leadActivity, setLeadActivity] = useState([]);
+    const [selectedContactInfo, setSelectedContactInfo] = useState(null);
     const [currentPage, setCurrentPage] = useState(1);
     const [totalPages, setTotalPages] = useState(1);
     const [totalRecords, setTotalRecords] = useState(0);
@@ -108,6 +109,7 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
             // Update states once data arrives
             setSelectedLead(leadId);
             setLeadActivity(response.data.events || []);
+            setSelectedContactInfo(response.data.contact || {});
             
             setError(null);
         } catch (error) {
@@ -131,6 +133,7 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
         setView('messages');
         setSelectedLead(null);
         setLeadActivity([]);
+        setSelectedContactInfo({});
         setError(null);
     };
 
@@ -348,7 +351,7 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
 
                 <div className="mb-6">
                     <h2 className="text-2xl font-bold text-gray-900 mb-2">
-                        Lead Activity - ID #{selectedLead}
+                        {`Lead Activity - ${selectedContactInfo?.name || "ID #" + selectedLead}`}
                     </h2>
                     <p className="text-sm text-gray-600">
                         Campaign: {selectedCampaign.name}
