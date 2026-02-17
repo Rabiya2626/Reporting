@@ -799,7 +799,7 @@ class MauticAPIService {
           start += batchRows.length;
           pageNumber++;
           hasMore = true;
-          
+
           // ⚡ Add small delay between chunks to avoid overwhelming PHP server
           if (hasMore && pageNumber % 5 === 0) {
             const delayMs = parseInt('500', 10);
@@ -1261,10 +1261,6 @@ class MauticAPIService {
         console.warn('Failed to fetch unique contacts count from Mautic (non-fatal):', countErr.message || countErr);
       }
 
-      // Fetch report data AFTER metadata succeeds (prevents background execution on error)
-      // This is a long-running operation that saves directly to DB
-      const emailReportResult = await this.fetchReport(client);
-
       // Fetch click trackables for emails (if we fetched metadata)
       try {
         if (emails && emails.length > 0) {
@@ -1324,6 +1320,10 @@ class MauticAPIService {
       } catch (e) {
         console.warn('Failed to fetch/save click trackables (non-fatal):', e.message || e);
       }
+
+      // Fetch report data AFTER metadata succeeds (prevents background execution on error)
+      // This is a long-running operation that saves directly to DB
+      const emailReportResult = await this.fetchReport(client);
 
       return {
         success: true,
