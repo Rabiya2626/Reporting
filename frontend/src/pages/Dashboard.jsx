@@ -27,7 +27,7 @@ const Dashboard = () => {
   })
   const [emailMetrics, setEmailMetrics] = useState(null)
   const [voicemailMetrics, setVoicemailMetrics] = useState(null)
-  const [syncStatus, setSyncStatus] = useState({ mautic: null, dropCowboy: null })
+  const [syncStatus, setSyncStatus] = useState({ mautic: null, dropCowboy: null, sms: null })
   const [syncProgress, setSyncProgress] = useState(null)
   const [insights, setInsights] = useState([])
   const progressIntervalRef = useRef(null)
@@ -176,14 +176,16 @@ const Dashboard = () => {
 
   const fetchSyncStatus = async () => {
     try {
-      const [mauticRes, dropCowboyRes] = await Promise.all([
+      const [mauticRes, dropCowboyRes, smsRes] = await Promise.all([
         axios.get('/api/mautic/sync/status').catch(() => ({ data: null })),
-        axios.get('/api/dropcowboy/sync-status').catch(() => ({ data: null }))
+        axios.get('/api/dropcowboy/sync-status').catch(() => ({ data: null })),
+        axios.get('/api/mautic/sms-clients/sync-status').catch(() => ({ data: null }))
       ])
       
       setSyncStatus({
         mautic: mauticRes.data,
-        dropCowboy: dropCowboyRes.data
+        dropCowboy: dropCowboyRes.data,
+        sms: smsRes.data
       })
     } catch (error) {
       console.error('Error fetching sync status:', error)
@@ -366,7 +368,7 @@ const Dashboard = () => {
 
       {hasFullAccess() && (
         <>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-6">
             <SyncIndicator 
               label="Autovation" 
               status={syncStatus.mautic?.data} 
@@ -377,6 +379,11 @@ const Dashboard = () => {
               label="Ringless Voicemail" 
               status={syncStatus.dropCowboy?.data} 
               lastSync={syncStatus.dropCowboy?.data?.lastSyncAt || syncStatus.dropCowboy?.data?.lastUpdated || voicemailMetrics?.lastUpdated}
+            />
+            <SyncIndicator 
+              label="SMS Clients" 
+              status={syncStatus.sms?.data} 
+              lastSync={syncStatus.sms?.data?.lastSyncAt || syncStatus.sms?.data?.lastUpdated || syncStatus.sms?.data?.lastSync}
             />
           </div>
           {syncProgress?.isActive && syncProgress?.clientList?.length > 0 && (
