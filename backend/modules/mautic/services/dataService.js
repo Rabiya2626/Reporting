@@ -330,13 +330,53 @@ class MauticDataService {
 
       let created = 0;
       let skipped = 0;
-      const BATCH_SIZE = 10000; // ⚡ ULTRA MASSIVE batches - 100x bigger!
+      const BATCH_SIZE = 2000; // ⚡ Optimized batch size for speed
 
-      // Process in batches for better performance
+      // Normalize dates to UTC consistently
+      const toUtcDate = (s) => {
+        try {
+          if (!s) return null;
+          const iso = String(s).trim().replace(' ', 'T') + 'Z';
+          const d = new Date(iso);
+          return Number.isNaN(d.getTime()) ? null : d;
+        } catch (e) { return null; }
+      };
+
+      // ⚡ OPTIMIZATION: Pre-filter existing records to avoid duplicate insert attempts
+      // Build a Set of existing record keys for fast lookup
+      const allEids = [...new Set(reportRows.map(r => parseInt(r.e_id)).filter(Boolean))];
+      
+      let existingKeys = new Set();
+      if (allEids.length > 0) {
+        // Fetch existing records in batches to avoid query size limits
+        const LOOKUP_BATCH = 5000;
+        for (let i = 0; i < allEids.length; i += LOOKUP_BATCH) {
+          const eidBatch = allEids.slice(i, i + LOOKUP_BATCH);
+          const existing = await prisma.mauticEmailReport.findMany({
+            where: {
+              clientId: clientId,
+              eId: { in: eidBatch }
+            },
+            select: {
+              eId: true,
+              emailAddress: true,
+              dateSent: true
+            }
+          });
+
+          // Build composite keys for fast lookup
+          existing.forEach(r => {
+            const key = `${r.eId}|${r.emailAddress}|${r.dateSent.toISOString()}`;
+            existingKeys.add(key);
+          });
+        }
+      }
+
+      console.log(`   ⚡ Pre-filtered: ${existingKeys.size} existing records found`);
+
+      // Process in batches
       for (let i = 0; i < reportRows.length; i += BATCH_SIZE) {
         const batch = reportRows.slice(i, i + BATCH_SIZE);
-
-        // Prepare valid records for batch insert
         const validRecords = [];
 
         for (const row of batch) {
@@ -346,46 +386,56 @@ class MauticDataService {
             continue;
           }
 
-          // Normalize dates to UTC consistently. Mautic returns date strings like
-          // 'YYYY-MM-DD HH:mm:ss' (no timezone). Interpret that value as UTC
-          // to avoid platform-local timezone shifts which cause inconsistent
-          // uniqueness comparisons on (eId,emailAddress,dateSent).
-          const toUtcDate = (s) => {
-            try {
-              if (!s) return null;
-              // Replace space with T and append Z to treat as UTC
-              const iso = String(s).trim().replace(' ', 'T') + 'Z';
-              const d = new Date(iso);
-              return Number.isNaN(d.getTime()) ? null : d;
-            } catch (e) { return null; }
-          };
+          const eId = parseInt(row.e_id);
+          const dateSent = toUtcDate(row.date_sent);
+          const emailAddress = row.email_address;
+
+          if (!dateSent) {
+            skipped++;
+            continue;
+          }
+
+          // ⚡ Skip if record already exists (pre-filtered)
+          const key = `${eId}|${emailAddress}|${dateSent.toISOString()}`;
+          if (existingKeys.has(key)) {
+            skipped++;
+            continue;
+          }
 
           validRecords.push({
-            eId: parseInt(row.e_id), // Store Mautic email ID directly
-            dateSent: toUtcDate(row.date_sent),
+            eId: eId,
+            dateSent: dateSent,
             dateRead: row.date_read ? toUtcDate(row.date_read) : null,
             subject: row.subject1,
-            emailAddress: row.email_address,
+            emailAddress: emailAddress,
             clientId: clientId
           });
         }
 
-        // Batch insert all valid records, skip duplicates automatically
+        // Batch insert only new records
         if (validRecords.length > 0) {
           try {
             const result = await prisma.mauticEmailReport.createMany({
               data: validRecords,
-              skipDuplicates: true  // Skip records that already exist
+              skipDuplicates: true  // Safety net for race conditions
             });
             created += result.count;
-            skipped += (validRecords.length - result.count);
+            
+            // Add newly created records to existingKeys to avoid duplicates in subsequent batches
+            validRecords.forEach(r => {
+              const key = `${r.eId}|${r.emailAddress}|${r.dateSent.toISOString()}`;
+              existingKeys.add(key);
+            });
           } catch (error) {
             console.error(`Batch insert error:`, error.message);
             skipped += validRecords.length;
           }
         }
 
-        console.log(`   Processed ${Math.min(i + BATCH_SIZE, reportRows.length)}/${reportRows.length} email reports (${created} new, ${skipped} skipped)...`);
+        const progress = Math.min(i + BATCH_SIZE, reportRows.length);
+        if (progress % 10000 === 0 || progress === reportRows.length) {
+          console.log(`   Processed ${progress}/${reportRows.length} email reports (${created} new, ${skipped} skipped)...`);
+        }
       }
 
       console.log(`✅ Email reports saved: ${created} created, ${skipped} skipped`);

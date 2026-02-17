@@ -124,6 +124,31 @@ class SftpService {
   }
 
   async downloadAllFiles() {
+    // ✅ Check if SFTP credentials exist before attempting connection
+    try {
+      const cred = await prisma.sFTPCredential.findFirst({
+        orderBy: { updatedAt: 'desc' }
+      });
+      
+      if (!cred || !cred.host || !cred.username || !cred.password) {
+        logger.debug('⏭️  Skipping SFTP download: No valid credentials configured');
+        return {
+          success: true,
+          filesDownloaded: 0,
+          skipped: true,
+          reason: 'No SFTP credentials configured'
+        };
+      }
+    } catch (credError) {
+      logger.warn('Failed to check SFTP credentials:', credError.message);
+      return {
+        success: true,
+        filesDownloaded: 0,
+        skipped: true,
+        reason: 'Failed to verify credentials'
+      };
+    }
+
     await this.ensureLocalDirectory();
     const sftp = this.createClient();
     

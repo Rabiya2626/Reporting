@@ -116,16 +116,23 @@ router.post('/sms-clients', async (req, res) => {
       }
     });
 
-    // Trigger initial sync
-    try {
-      const syncResult = await syncSmsClientData(smsClient.id);
-      logger.info(`Initial sync for SMS client ${smsClient.id}:`, syncResult);
-    } catch (syncError) {
-      logger.error(`Initial sync failed for SMS client ${smsClient.id}:`, syncError);
-    }
+    // ⚡ FAST INITIAL FETCH - Trigger lightweight sync in background
+    // This makes SMS campaigns visible instantly without blocking the response
+    setImmediate(async () => {
+      try {
+        logger.info(`⚡ Starting fast SMS fetch for client ${smsClient.id}...`);
+        const syncResult = await syncSmsClientData(smsClient.id);
+        logger.info(`   ✅ SMS fetch complete: ${syncResult.smsCampaigns || 0} campaigns fetched`);
+      } catch (syncError) {
+        logger.error(`   ❌ SMS fetch failed for client ${smsClient.id}:`, syncError.message);
+      }
+    });
+
+    logger.info(`✅ SMS client created. Data fetch running in background.`);
 
     res.status(201).json({
       success: true,
+      message: 'SMS client created successfully. SMS campaigns are being fetched in background.',
       data: {
         id: smsClient.id,
         name: smsClient.name,
@@ -764,40 +771,10 @@ async function syncSmsClientData(smsClientId) {
 
     logger.info(`   Storage result: ${storeResult.created} created, ${storeResult.updated} updated, ${storeResult.matched} matched, ${storeResult.unmatched} unmatched`);
 
-    // ✅ Fetch and store SMS stats for each campaign
-    if (smsCampaigns.length > 0) {
-      logger.info(`📊 Fetching SMS stats for ${smsCampaigns.length} campaigns...`);
-      let totalStatsCreated = 0;
-      let totalStatsSkipped = 0;
-
-      for (const sms of smsCampaigns) {
-        try {
-          // Find the local SMS record to get its ID
-          const localSms = await prisma.mauticSms.findUnique({
-            where: { mauticId: sms.id }
-          });
-
-          if (localSms && localSms.clientId) {
-            // Get the client credentials (could be the auto-created one or matched one)
-            const client = await prisma.mauticClient.findUnique({
-              where: { id: localSms.clientId },
-              select: { id: true, name: true, mauticUrl: true, username: true, password: true }
-            });
-
-            if (client) {
-              const statsResult = await mauticAPIService.fetchAndStoreSmsStats(client, localSms.id, sms.id);
-              totalStatsCreated += statsResult.created || 0;
-              totalStatsSkipped += statsResult.skipped || 0;
-              logger.info(`   ✅ SMS "${sms.name}": ${statsResult.created} stats created, ${statsResult.skipped} skipped`);
-            }
-          }
-        } catch (statsErr) {
-          logger.warn(`   ⚠️ Failed to fetch stats for SMS ${sms.id}:`, statsErr.message);
-        }
-      }
-
-      logger.info(`   ✅ SMS stats complete: ${totalStatsCreated} created, ${totalStatsSkipped} skipped`);
-    }
+    // ⚡ OPTIMIZATION: Skip stats fetch during initial creation for speed
+    // Stats will be fetched during scheduled sync or manual sync
+    // This makes SMS campaigns visible instantly in the UI
+    logger.info(`⚡ SMS campaigns stored. Stats will be fetched during scheduled sync.`);
 
     // Create sync log after successful completion
     const endTime = Date.now();

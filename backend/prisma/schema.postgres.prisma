@@ -378,6 +378,7 @@ model MauticClient {
   syncLogs      MauticSyncLog[]
   fetchedMonths MauticFetchedMonth[]
   emailReports  MauticEmailReport[]        @relation("ClientEmailReports")
+  emailReportsAggregated MauticEmailReportAggregated[] @relation("ClientEmailReportsAggregated")
   emailStatsCache MauticEmailStatsCache[]  @relation("ClientEmailStatsCache")
   clickTrackables MauticClickTrackable[]
   smsCampaigns  MauticSms[]
@@ -441,6 +442,27 @@ model MauticEmailReport {
   @@index([eId])
   @@index([clientId])
   @@index([dateSent])
+}
+
+// ⚡ NEW: Aggregated email report stats (grouped by email + date)
+// This drastically reduces storage and improves query performance
+model MauticEmailReportAggregated {
+  id          Int      @id @default(autoincrement())
+  clientId    Int
+  eId         Int      // Mautic email ID
+  date        DateTime @db.Date // Date only (no time)
+  sentCount   Int      @default(0)
+  readCount   Int      @default(0)
+  subject     String?  @db.VarChar(500)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  client MauticClient @relation("ClientEmailReportsAggregated", fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@unique([clientId, eId, date])
+  @@index([clientId])
+  @@index([eId])
+  @@index([date])
 }
 
 // Store click/redirect stats per email (from channel_url_trackables)
