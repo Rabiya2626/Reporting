@@ -197,6 +197,23 @@ router.get("/sync-status", async (req, res) => {
     ? Math.floor((Date.now() - currentSyncStartTime) / 1000)
     : 0;
 
+  // Check if SFTP credentials exist
+  let hasCredentials = false;
+  let credentialSource = null;
+  try {
+    const sftpCredential = await prisma.sFTPCredential.findFirst({
+      orderBy: { updatedAt: 'desc' }
+    });
+    hasCredentials = !!sftpCredential;
+    credentialSource = hasCredentials ? "database" : null;
+    logger.debug(`SFTP credential check: ${hasCredentials ? 'found' : 'not found'} in database`);
+  } catch (error) {
+    // Table might not exist, check environment variables as fallback
+    logger.warn('SFTPCredential table not found, falling back to environment variables', { error: error.message });
+    hasCredentials = !!(process.env.SFTP_HOST && process.env.SFTP_USERNAME);
+    credentialSource = hasCredentials ? "environment" : null;
+  }
+
   // Get last successful sync from database
   let lastSyncAt = null;
   try {
@@ -208,14 +225,19 @@ router.get("/sync-status", async (req, res) => {
     logger.error("Error fetching last sync time:", error);
   }
 
+  // Only return lastSyncAt if credentials exist
+  const effectiveLastSyncAt = hasCredentials ? lastSyncAt : null;
+
   res.json({
     success: true,
     data: {
       isSyncing: isSyncInProgress,
       elapsedTime: elapsedSeconds,
       startTime: currentSyncStartTime,
-      lastSyncAt: lastSyncAt,
-      lastUpdated: lastSyncAt, // Alias for frontend compatibility
+      lastSyncAt: effectiveLastSyncAt,
+      lastUpdated: effectiveLastSyncAt, // Alias for frontend compatibility
+      hasCredentials: hasCredentials,
+      credentialSource: credentialSource,
     },
   });
 });

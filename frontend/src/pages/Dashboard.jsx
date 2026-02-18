@@ -719,23 +719,48 @@ const RateBox = ({ label, value, isNegative = false }) => {
 }
 
 const SyncIndicator = ({ label, status, lastSync, isActive }) => {
+  // Determine if credentials are configured
+  const hasCredentials = status?.hasCredentials ?? true
+  
+  // Determine sync state
   const isRecent = lastSync && (new Date() - new Date(lastSync)) < 3600000
+  const neverSynced = !lastSync && hasCredentials
+  const notConfigured = !hasCredentials
+  
+  // Determine indicator color and icon
+  const getIndicatorState = () => {
+    if (isActive) return { color: 'bg-blue-500', icon: <Loader2 size={14} className="animate-spin text-blue-600" /> }
+    if (notConfigured) return { color: 'bg-red-500', icon: <XCircle size={14} className="text-red-600" /> }
+    if (neverSynced) return { color: 'bg-gray-400', icon: <Clock size={14} className="text-gray-600" /> }
+    if (isRecent) return { color: 'bg-green-500', icon: <CheckCircle size={14} className="text-green-600" /> }
+    return { color: 'bg-yellow-500', icon: <Clock size={14} className="text-yellow-600" /> }
+  }
+  
+  const indicatorState = getIndicatorState()
+  
+  // Determine display text
+  const getDisplayText = () => {
+    if (isActive) return 'Syncing...'
+    if (notConfigured) return 'Not configured'
+    if (neverSynced) return 'Never synced'
+    return new Date(lastSync).toLocaleString()
+  }
 
   return (
-    <div className={`bg-white rounded-lg border ${isActive ? 'border-blue-300 bg-blue-50' : 'border-gray-200'} p-3 flex items-center gap-3`}>
+    <div className={`bg-white rounded-lg border ${isActive ? 'border-blue-300 bg-blue-50' : notConfigured ? 'border-red-200 bg-red-50' : 'border-gray-200'} p-3 flex items-center gap-3`}>
       {isActive ? (
-        <Loader2 size={14} className="animate-spin text-blue-600" />
+        indicatorState.icon
       ) : (
-        <div className={`w-2 h-2 rounded-full ${isRecent ? 'bg-green-500' : 'bg-yellow-500'}`} />
+        <div className={`w-2 h-2 rounded-full ${indicatorState.color}`} />
       )}
       <div className="flex-1 min-w-0">
         <div className="text-sm font-medium text-gray-900 flex items-center gap-2">
           {label}
           {isActive && <span className="text-xs text-blue-600 font-normal">Syncing...</span>}
         </div>
-        <div className="text-xs text-gray-500 flex items-center gap-1">
+        <div className={`text-xs flex items-center gap-1 ${notConfigured ? 'text-red-600' : 'text-gray-500'}`}>
           <Clock size={10} />
-          {lastSync ? new Date(lastSync).toLocaleString() : 'Never synced'}
+          {getDisplayText()}
         </div>
       </div>
     </div>
