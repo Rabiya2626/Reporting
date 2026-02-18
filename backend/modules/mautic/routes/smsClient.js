@@ -12,6 +12,62 @@ const router = express.Router();
 // ============================================
 
 /**
+ * GET /api/mautic/sms-clients/sync-status
+ * Get sync status for SMS clients
+ */
+router.get('/sms-clients/sync-status', async (req, res) => {
+  try {
+    logger.debug('Fetching SMS clients sync status...');
+
+    // Get most recent lastSyncAt from all active SMS clients
+    const mostRecentSync = await prisma.smsClient.findFirst({
+      where: { 
+        lastSyncAt: { not: null },
+        isActive: true 
+      },
+      orderBy: { lastSyncAt: 'desc' },
+      select: { lastSyncAt: true }
+    });
+
+    // Count active SMS clients
+    const activeClientsCount = await prisma.smsClient.count({
+      where: { isActive: true }
+    });
+
+    // Count total SMS campaigns linked to SMS clients
+    const totalSmsCampaigns = await prisma.mauticSms.count({
+      where: { 
+        smsClientId: { not: null }
+      }
+    });
+
+    const lastSyncAt = mostRecentSync?.lastSyncAt || null;
+    const hasCredentials = activeClientsCount > 0;
+
+    logger.debug(`SMS sync status: lastSyncAt=${lastSyncAt}, hasCredentials=${hasCredentials}, activeClientsCount=${activeClientsCount}, totalSmsCampaigns=${totalSmsCampaigns}`);
+
+    res.json({
+      success: true,
+      data: {
+        lastSyncAt,
+        lastUpdated: lastSyncAt,
+        lastSync: lastSyncAt,
+        hasCredentials,
+        activeClientsCount,
+        totalSmsCampaigns
+      }
+    });
+  } catch (error) {
+    logger.error('Failed to fetch SMS clients sync status:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch SMS clients sync status',
+      error: error.message
+    });
+  }
+});
+
+/**
  * GET /api/mautic/sms-clients
  * Get all SMS clients
  */

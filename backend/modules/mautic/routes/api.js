@@ -1589,6 +1589,7 @@ router.get("/sync/status", async (req, res) => {
 
   // Get last successful sync from database
   let lastSyncAt = null;
+  let activeClientsCount = 0;
   try {
     const lastSync = await prisma.syncLog.findFirst({
       where: {
@@ -1607,9 +1608,16 @@ router.get("/sync/status", async (req, res) => {
       });
       lastSyncAt = client?.lastSyncAt || null;
     }
+
+    // Count active Mautic clients for hasCredentials flag
+    activeClientsCount = await prisma.mauticClient.count({
+      where: { isActive: true }
+    });
   } catch (error) {
     logger.error("Error fetching last sync time:", error);
   }
+
+  const hasCredentials = activeClientsCount > 0;
 
   res.json({
     success: true,
@@ -1621,6 +1629,8 @@ router.get("/sync/status", async (req, res) => {
       lastSyncAt: lastSyncAt,
       lastUpdated: lastSyncAt, // Alias for frontend compatibility
       lastSync: lastSyncAt, // Additional alias
+      hasCredentials: hasCredentials,
+      activeClientsCount: activeClientsCount,
     },
   });
 });
