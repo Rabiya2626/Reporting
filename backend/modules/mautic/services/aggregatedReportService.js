@@ -3,12 +3,17 @@ import prisma from '../../../prisma/client.js';
 /**
  * Service for handling aggregated email report stats
  * This reduces database storage by 90%+ and improves query performance
+ * 
+ * IMPORTANT: saveAggregatedReports should be called ONCE with ALL data,
+ * not per-batch! The grouping logic must see all rows to aggregate correctly.
  */
 class AggregatedReportService {
   /**
    * Aggregate raw report rows by eId + date and save to aggregated table
+   * Uses same grouping logic as aggEmailReports.js script
+   * 
    * @param {number} clientId - Client ID
-   * @param {Array} reportRows - Raw report rows from Mautic API
+   * @param {Array} reportRows - ALL raw report rows from Mautic API (not per-batch!)
    * @returns {Promise<Object>} Save results
    */
   async saveAggregatedReports(clientId, reportRows) {
@@ -20,40 +25,36 @@ class AggregatedReportService {
         return { success: true, created: 0, updated: 0, total: 0, originalRows: 0, reductionPercent: 0 };
       }
 
-      // Group by eId + date
-      const grouped = new Map();
+      // Group by eId + date (same logic as aggEmailReports.js)
+      const grouped = {};
 
       for (const row of reportRows) {
-        if (!row.e_id || !row.date_sent) {
-          console.log(`   ⚠️  Skipping row with missing e_id or date_sent:`, { e_id: row.e_id, date_sent: row.date_sent });
-          continue;
+        const e_id = row.e_id;
+        const date = row.date_sent?.slice(0, 10); // Extract YYYY-MM-DD
+        
+        if (!e_id || !date) {
+          continue; // Skip invalid rows
         }
 
-        const eId = parseInt(row.e_id);
-        const dateSent = new Date(row.date_sent);
+        const key = `${e_id}_${date}`;
         
-        // Extract date only (no time)
-        const dateOnly = new Date(dateSent.getFullYear(), dateSent.getMonth(), dateSent.getDate());
-        const key = `${eId}_${dateOnly.toISOString().split('T')[0]}`;
-
-        if (!grouped.has(key)) {
-          grouped.set(key, {
-            eId,
-            date: dateOnly,
+        if (!grouped[key]) {
+          grouped[key] = {
+            eId: parseInt(e_id),
+            date: new Date(date + 'T00:00:00Z'), // Parse as UTC date
             sentCount: 0,
             readCount: 0,
             subject: row.subject1 || row.subject || null
-          });
+          };
         }
 
-        const group = grouped.get(key);
-        group.sentCount++;
-        if (row.date_read && row.date_read.trim()) {
-          group.readCount++;
+        grouped[key].sentCount++;
+        if (row.date_read?.trim()) {
+          grouped[key].readCount++;
         }
       }
 
-      const aggregated = Array.from(grouped.values());
+      const aggregated = Object.values(grouped);
       console.log(`   ⚡ [AggregatedReportService] Aggregated ${reportRows.length} rows into ${aggregated.length} grouped records (${Math.round((1 - aggregated.length / reportRows.length) * 100)}% reduction)`);
 
       if (aggregated.length === 0) {
@@ -61,114 +62,44 @@ class AggregatedReportService {
         return { success: true, created: 0, updated: 0, total: 0, originalRows: reportRows.length, reductionPercent: 0 };
       }
 
-      // Fetch existing aggregated records to update them
-      const eIds = [...new Set(aggregated.map(a => a.eId))];
-      const dates = [...new Set(aggregated.map(a => a.date))];
+      // Sort by date (earliest to latest)
+      aggregated.sort((a, b) => a.date - b.date);
+      console.log(`   📅 Date range: ${aggregated[0].date.toISOString().split('T')[0]} → ${aggregated[aggregated.length - 1].date.toISOString().split('T')[0]}`);
 
-      console.log(`   🔍 [AggregatedReportService] Checking for existing records (${eIds.length} unique eIds, ${dates.length} unique dates)...`);
-
-      const existing = await prisma.mauticEmailReportAggregated.findMany({
-        where: {
-          clientId,
-          eId: { in: eIds },
-          date: { in: dates }
-        },
-        select: {
-          id: true,
-          eId: true,
-          date: true,
-          sentCount: true,
-          readCount: true
-        }
-      });
-
-      // Build lookup map
-      const existingMap = new Map();
-      existing.forEach(e => {
-        const key = `${e.eId}_${e.date.toISOString().split('T')[0]}`;
-        existingMap.set(key, e);
-      });
-
-      console.log(`   Found ${existing.length} existing aggregated records to update`);
-
-      // Separate into creates and updates
-      const toCreate = [];
-      const toUpdate = [];
-
-      for (const agg of aggregated) {
-        const key = `${agg.eId}_${agg.date.toISOString().split('T')[0]}`;
-        const existingRecord = existingMap.get(key);
-
-        if (existingRecord) {
-          // Update: add to existing counts
-          toUpdate.push({
-            id: existingRecord.id,
-            sentCount: existingRecord.sentCount + agg.sentCount,
-            readCount: existingRecord.readCount + agg.readCount
-          });
-        } else {
-          // Create new record
-          toCreate.push({
-            clientId,
-            eId: agg.eId,
-            date: agg.date,
-            sentCount: agg.sentCount,
-            readCount: agg.readCount,
-            subject: agg.subject
-          });
-        }
-      }
-
+      // Save to database in batches
+      console.log(`   💾 [AggregatedReportService] Saving ${aggregated.length} aggregated records...`);
+      
+      const BATCH_SIZE = 1000;
       let created = 0;
-      let updated = 0;
 
-      // Batch create new records
-      if (toCreate.length > 0) {
-        console.log(`   💾 [AggregatedReportService] Creating ${toCreate.length} new aggregated records...`);
-        const BATCH_SIZE = 1000;
-        for (let i = 0; i < toCreate.length; i += BATCH_SIZE) {
-          const batch = toCreate.slice(i, i + BATCH_SIZE);
-          try {
-            const result = await prisma.mauticEmailReportAggregated.createMany({
-              data: batch,
-              skipDuplicates: true
-            });
-            created += result.count;
-            console.log(`      Batch ${Math.floor(i / BATCH_SIZE) + 1}: Created ${result.count} records`);
-          } catch (batchError) {
-            console.error(`      ❌ Batch ${Math.floor(i / BATCH_SIZE) + 1} failed:`, batchError.message);
-            throw batchError;
-          }
+      for (let i = 0; i < aggregated.length; i += BATCH_SIZE) {
+        const batch = aggregated.slice(i, i + BATCH_SIZE);
+        try {
+          const result = await prisma.mauticEmailReportAggregated.createMany({
+            data: batch.map(agg => ({
+              clientId,
+              eId: agg.eId,
+              date: agg.date,
+              sentCount: agg.sentCount,
+              readCount: agg.readCount,
+              subject: agg.subject
+            })),
+            skipDuplicates: true // Skip if already exists (prevents duplicates)
+          });
+          created += result.count;
+          console.log(`      Batch ${Math.floor(i / BATCH_SIZE) + 1}: Created ${result.count} records`);
+        } catch (batchError) {
+          console.error(`      ❌ Batch ${Math.floor(i / BATCH_SIZE) + 1} failed:`, batchError.message);
+          throw batchError;
         }
-        console.log(`   ✅ Created ${created} new aggregated records`);
       }
 
-      // Batch update existing records
-      if (toUpdate.length > 0) {
-        console.log(`   🔄 [AggregatedReportService] Updating ${toUpdate.length} existing aggregated records...`);
-        for (const update of toUpdate) {
-          try {
-            await prisma.mauticEmailReportAggregated.update({
-              where: { id: update.id },
-              data: {
-                sentCount: update.sentCount,
-                readCount: update.readCount
-              }
-            });
-            updated++;
-          } catch (updateError) {
-            console.error(`      ❌ Update failed for record ${update.id}:`, updateError.message);
-          }
-        }
-        console.log(`   ✅ Updated ${updated} existing aggregated records`);
-      }
-
-      console.log(`✅ [AggregatedReportService] Aggregated reports saved: ${created} created, ${updated} updated`);
+      console.log(`✅ [AggregatedReportService] Aggregated reports saved: ${created} created`);
 
       return {
         success: true,
         created,
-        updated,
+        updated: 0,
         total: aggregated.length,
         originalRows: reportRows.length,
         reductionPercent: Math.round((1 - aggregated.length / reportRows.length) * 100)

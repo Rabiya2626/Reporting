@@ -642,18 +642,26 @@ model MauticSms {
 }
 
 model MauticSmsStat {
-  id          Int       @id @default(autoincrement())
-  smsId       Int       // Links to MauticSms
-  mauticSmsId Int       // Original SMS campaign ID from Mautic
-  leadId      Int
-  dateSent    DateTime?
-  isFailed    String    @default("0")
-  createdAt   DateTime  @default(now())
+  id            Int       @id @default(autoincrement())
+  smsId         Int       // Links to MauticSms
+  mauticSmsId   Int       // Original SMS campaign ID from Mautic
+  leadId        Int
+  dateSent      DateTime?
+  isFailed      String    @default("0")
+  mobile        String?   // Mobile number fetched from contact API
+  messageText   String?   @db.Text // Content of the sent SMS
+  replyText     String?   @db.Text // Content of the latest reply (if any)
+  replyCategory String?   // "Stop", "Unsubscribe", or "Other"
+  repliedAt     DateTime? // Timestamp of latest reply
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
   sms         MauticSms @relation(fields: [smsId], references: [id], onDelete: Cascade)
 
   @@unique([mauticSmsId, leadId])
   @@index([smsId])
+  @@index([replyCategory])
+  @@index([repliedAt])
   @@map("mautic_sms_stats")
 }
 

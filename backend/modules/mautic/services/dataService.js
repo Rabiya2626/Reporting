@@ -325,7 +325,7 @@ class MauticDataService {
 
       if (reportRows.length === 0) {
         console.log(`✅ No email reports to save`);
-        return { success: true, created: 0, updated: 0, total: 0 };
+        return { success: true, created: 0, skipped: 0, total: 0 };
       }
 
       let created = 0;
@@ -344,11 +344,16 @@ class MauticDataService {
 
       // ⚡ OPTIMIZATION: Pre-filter existing records to avoid duplicate insert attempts
       // Build a Set of existing record keys for fast lookup
-      const allEids = [...new Set(reportRows.map(r => parseInt(r.e_id)).filter(Boolean))];
+      // We need to check by composite key, not just eId, to avoid false positives
       
       let existingKeys = new Set();
+      
+      // Build list of unique eIds from incoming data for efficient querying
+      const allEids = [...new Set(reportRows.map(r => parseInt(r.e_id)).filter(Boolean))];
+      
       if (allEids.length > 0) {
-        // Fetch existing records in batches to avoid query size limits
+        // Fetch ALL existing records for these eIds (more efficient than OR queries)
+        // Then filter in memory using composite key
         const LOOKUP_BATCH = 5000;
         for (let i = 0; i < allEids.length; i += LOOKUP_BATCH) {
           const eidBatch = allEids.slice(i, i + LOOKUP_BATCH);
@@ -372,7 +377,7 @@ class MauticDataService {
         }
       }
 
-      console.log(`   ⚡ Pre-filtered: ${existingKeys.size} existing records found`);
+      console.log(`   ⚡ Pre-filtered: ${existingKeys.size} existing records found from ${allEids.length} unique eIds`);
 
       // Process in batches
       for (let i = 0; i < reportRows.length; i += BATCH_SIZE) {

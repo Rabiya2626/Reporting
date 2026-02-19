@@ -411,79 +411,170 @@ class SmsService {
    * @param {Array} stats - Array of SMS statistics
    * @returns {Promise<Object>} Store results
    */
-  async storeSmsStats(smsId, mauticSmsId, stats) {
-    try {
-      logger.info(`📥 Storing ${stats.length} SMS stats for SMS ${smsId} (Mautic ID: ${mauticSmsId})`);
-      
-      if (!Array.isArray(stats) || stats.length === 0) {
-        logger.warn(`⚠️  No stats to store (received ${typeof stats})`);
-        return { created: 0, skipped: 0, total: 0 };
-      }
+  async storeSmsStats(smsId, mauticSmsId, stats, fetchMessages = true) {
+      try {
+        logger.info(`📥 Storing ${stats.length} SMS stats for SMS ${smsId} (Mautic ID: ${mauticSmsId})`);
+        if (fetchMessages) {
+          logger.info(`   📨 Fetching message and reply data for all contacts...`);
+        }
 
-      let created = 0, skipped = 0, errors = 0;
+        if (!Array.isArray(stats) || stats.length === 0) {
+          logger.warn(`⚠️  No stats to store (received ${typeof stats})`);
+          return { created: 0, skipped: 0, total: 0 };
+        }
 
-      // Log sample stat for debugging
-      logger.info(`   Sample stat: ${JSON.stringify(stats[0])}`);
+        let created = 0, skipped = 0, errors = 0;
 
-      for (const stat of stats) {
+        // Log sample stat for debugging
+        logger.info(`   Sample stat: ${JSON.stringify(stats[0])}`);
+
+        // Get unique lead IDs for mobile number fetching
+        const leadIds = [...new Set(stats.map(stat => {
+          return stat.lead_id || stat.leadId || stat.contact_id || stat.contactId;
+        }).filter(Boolean))];
+
+        logger.info(`   📱 Fetching mobile numbers for ${leadIds.length} unique leads...`);
+
+        // Get client credentials for fetching mobile numbers and messages
+        let mobileMap = new Map();
+        let client = null;
+        
         try {
-          // Handle different field name formats from Mautic API
-          // Some APIs use lead_id, others use leadId, etc.
-          const leadId = stat.lead_id || stat.leadId || stat.contact_id || stat.contactId;
-          const dateSent = stat.date_sent || stat.dateSent || stat.sent_date || stat.sentDate;
-          const isFailed = stat.is_failed || stat.isFailed || stat.failed || '0';
-
-          if (!leadId) {
-            logger.warn(`   ⚠️  Skipping stat with no lead ID: ${JSON.stringify(stat)}`);
-            errors++;
-            continue;
-          }
-
-          // Check if already exists
-          const existing = await prisma.mauticSmsStat.findUnique({
-            where: {
-              mauticSmsId_leadId: {
-                mauticSmsId: mauticSmsId,
-                leadId: parseInt(leadId)
-              }
-            }
+          const smsRecord = await prisma.mauticSms.findUnique({
+            where: { id: smsId },
+            include: { client: true }
           });
 
-          if (!existing) {
-            await prisma.mauticSmsStat.create({
-              data: {
-                smsId,
-                mauticSmsId,
-                leadId: parseInt(leadId),
-                dateSent: dateSent ? new Date(dateSent) : null,
-                isFailed: String(isFailed) // Ensure it's a string
+          if (smsRecord?.client) {
+            client = smsRecord.client;
+            const mauticAPI = (await import('./mauticAPI.js')).default;
+            mobileMap = await mauticAPI.fetchMobileNumbers(
+              client,
+              leadIds,
+              5 // 5 concurrent requests
+            );
+            logger.info(`   ✅ Fetched ${mobileMap.size} mobile numbers`);
+          } else {
+            logger.warn(`   ⚠️  Could not fetch mobile numbers - client not found`);
+          }
+        } catch (mobileError) {
+          logger.warn(`   ⚠️  Failed to fetch mobile numbers: ${mobileError.message}`);
+          // Continue without mobiles - they can be fetched later
+        }
+
+        // Fetch message and reply data if requested and client available
+        let messageDataMap = new Map();
+        if (fetchMessages && client && leadIds.length > 0) {
+          logger.info(`   📨 Fetching message and reply data for ${leadIds.length} leads (sequential for accuracy)...`);
+          try {
+            const smsMessageService = (await import('./smsMessageService.js')).default;
+            const result = await smsMessageService.batchFetchAndUpdateMessages(
+              client,
+              smsId,
+              mauticSmsId,
+              leadIds,
+              true // Return data instead of updating DB
+            );
+            
+            if (result.messageData) {
+              messageDataMap = result.messageData;
+              logger.info(`   ✅ Fetched message data for ${messageDataMap.size} leads`);
+            }
+          } catch (messageError) {
+            logger.warn(`   ⚠️  Failed to fetch message data: ${messageError.message}`);
+            // Continue without message data - can be fetched later via backfill script
+          }
+        }
+
+        for (const stat of stats) {
+          try {
+            // Handle different field name formats from Mautic API
+            // Some APIs use lead_id, others use leadId, etc.
+            const leadId = stat.lead_id || stat.leadId || stat.contact_id || stat.contactId;
+            const dateSent = stat.date_sent || stat.dateSent || stat.sent_date || stat.sentDate;
+            const isFailed = stat.is_failed || stat.isFailed || stat.failed || '0';
+
+            if (!leadId) {
+              logger.warn(`   ⚠️  Skipping stat with no lead ID: ${JSON.stringify(stat)}`);
+              errors++;
+              continue;
+            }
+
+            // Get mobile number from map
+            const mobile = mobileMap.get(parseInt(leadId)) || null;
+            
+            // Get message data from map (if fetched)
+            const messageData = messageDataMap.get(parseInt(leadId)) || {};
+
+            // Check if already exists
+            const existing = await prisma.mauticSmsStat.findUnique({
+              where: {
+                mauticSmsId_leadId: {
+                  mauticSmsId: mauticSmsId,
+                  leadId: parseInt(leadId)
+                }
               }
             });
-            created++;
-            
-            // Log first few creates for verification
-            if (created <= 3) {
-              logger.info(`   ✅ Created stat: leadId=${leadId}, dateSent=${dateSent}, isFailed=${isFailed}`);
-            }
-          } else {
-            skipped++;
-          }
-        } catch (statError) {
-          logger.error(`   ❌ Error storing individual stat:`, {
-            error: statError.message,
-            stat: JSON.stringify(stat)
-          });
-          errors++;
-        }
-      }
 
-      logger.info(`✅ SMS stats stored: ${created} created, ${skipped} skipped, ${errors} errors`);
-      return { created, skipped, errors, total: created + skipped };
-    } catch (error) {
-      logger.error('❌ Failed to store SMS stats:', { error: error.message, stack: error.stack });
-      throw error;
+            if (!existing) {
+              await prisma.mauticSmsStat.create({
+                data: {
+                  smsId,
+                  mauticSmsId,
+                  leadId: parseInt(leadId),
+                  dateSent: dateSent ? new Date(dateSent) : null,
+                  isFailed: String(isFailed),
+                  mobile: mobile,
+                  messageText: messageData.messageText || null,
+                  replyText: messageData.replyText || null,
+                  replyCategory: messageData.replyCategory || null,
+                  repliedAt: messageData.repliedAt || null
+                }
+              });
+              created++;
+
+              // Log first few creates for verification
+              if (created <= 3) {
+                logger.info(`   ✅ Created stat: leadId=${leadId}, mobile=${mobile || 'N/A'}, hasMessage=${!!messageData.messageText}, hasReply=${!!messageData.replyText}`);
+              }
+            } else {
+              // Update existing record with new data if available
+              const updateData = {};
+              if (mobile && !existing.mobile) updateData.mobile = mobile;
+              
+              // Always update message/reply data if we fetched it (even if existing has data)
+              if (messageData.messageText) updateData.messageText = messageData.messageText;
+              if (messageData.replyText) {
+                updateData.replyText = messageData.replyText;
+                updateData.replyCategory = messageData.replyCategory;
+                updateData.repliedAt = messageData.repliedAt;
+              }
+              
+              if (Object.keys(updateData).length > 0) {
+                await prisma.mauticSmsStat.update({
+                  where: { id: existing.id },
+                  data: updateData
+                });
+                logger.info(`   🔄 Updated stat: leadId=${leadId}, fields=${Object.keys(updateData).join(', ')}`);
+              }
+              skipped++;
+            }
+          } catch (statError) {
+            logger.error(`   ❌ Error storing individual stat:`, {
+              error: statError.message,
+              stat: JSON.stringify(stat)
+            });
+            errors++;
+          }
+        }
+
+        logger.info(`✅ SMS stats stored: ${created} created, ${skipped} skipped, ${errors} errors`);
+        return { created, skipped, errors, total: created + skipped };
+      } catch (error) {
+        logger.error('❌ Failed to store SMS stats:', { error: error.message, stack: error.stack });
+        throw error;
+      }
     }
-  }
 
   /**
    * Get SMS campaigns for a specific client (Mautic or SMS client)
