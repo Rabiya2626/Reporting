@@ -644,7 +644,7 @@ class MauticDataService {
    */
   async getClients() {
     try {
-      // const clients = await prisma.mauticClient.findMany({
+       const clients = await prisma.mauticClient.findMany({
       //   where: {
       //     // Include all clients (including SMS-only)
       //     isActive: true,
