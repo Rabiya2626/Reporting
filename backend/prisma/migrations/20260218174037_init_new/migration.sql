@@ -490,9 +490,17 @@ CREATE TABLE `mautic_sms_stats` (
     `leadId` INTEGER NOT NULL,
     `dateSent` DATETIME(3) NULL,
     `isFailed` VARCHAR(191) NOT NULL DEFAULT '0',
+    `mobile` VARCHAR(191) NULL,
+    `messageText` TEXT NULL,
+    `replyText` TEXT NULL,
+    `replyCategory` VARCHAR(191) NULL,
+    `repliedAt` DATETIME(3) NULL,
     `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `updatedAt` DATETIME(3) NOT NULL,
 
     INDEX `mautic_sms_stats_smsId_idx`(`smsId`),
+    INDEX `mautic_sms_stats_replyCategory_idx`(`replyCategory`),
+    INDEX `mautic_sms_stats_repliedAt_idx`(`repliedAt`),
     UNIQUE INDEX `mautic_sms_stats_mauticSmsId_leadId_key`(`mauticSmsId`, `leadId`),
     PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;

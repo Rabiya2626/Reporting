@@ -7,6 +7,46 @@ import logger from '../../../utils/logger.js';
 
 const router = express.Router();
 
+// Track ongoing SMS sync operations per client
+// Structure: Map<clientId, Set<smsId>>
+const activeSyncsByClient = new Map();
+
+/**
+ * Check if any SMS campaign for a client is currently syncing
+ */
+function isClientSyncing(clientId) {
+  const syncs = activeSyncsByClient.get(clientId);
+  return syncs && syncs.size > 0;
+}
+
+/**
+ * Mark an SMS campaign as syncing
+ */
+function markSmsAsSyncing(clientId, smsId) {
+  if (!activeSyncsByClient.has(clientId)) {
+    activeSyncsByClient.set(clientId, new Set());
+  }
+  activeSyncsByClient.get(clientId).add(smsId);
+  logger.debug(`🔄 Marked SMS ${smsId} as syncing for client ${clientId}`);
+}
+
+/**
+ * Mark an SMS campaign as sync complete
+ */
+function markSmsAsSyncComplete(clientId, smsId) {
+  const syncs = activeSyncsByClient.get(clientId);
+  if (syncs) {
+    syncs.delete(smsId);
+    if (syncs.size === 0) {
+      activeSyncsByClient.delete(clientId);
+    }
+    logger.debug(`✅ Marked SMS ${smsId} as sync complete for client ${clientId}`);
+  }
+}
+
+// Export tracking functions for use by other modules
+export { markSmsAsSyncing, markSmsAsSyncComplete, isClientSyncing };
+
 // ============================================
 // SMS CLIENT MANAGEMENT ROUTES
 // ============================================
@@ -584,14 +624,38 @@ router.get('/sms-campaigns/:smsId/debug', async (req, res) => {
 });
 
 /**
+ * GET /api/mautic/sms-clients/:clientId/sync-status
+ * Check if any SMS campaign for this client is currently syncing
+ */
+router.get('/sms-clients/:clientId/sync-status', async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const isSyncing = isClientSyncing(parseInt(clientId));
+    
+    res.json({
+      success: true,
+      syncing: isSyncing
+    });
+  } catch (error) {
+    logger.error('Failed to check SMS sync status:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to check sync status',
+      error: error.message
+    });
+  }
+});
+
+/**
  * GET /api/mautic/sms-campaigns/:smsId/messages
  * Get SMS messages/stats for a specific SMS campaign with pagination
- * Includes reply data cross-referenced from lead event log
+ * Includes message text, reply data, and filtering by reply category
+ * Fetches and stores mobile numbers and messages for leads that don't have them yet
  */
 router.get('/sms-campaigns/:smsId/messages', async (req, res) => {
   try {
     const { smsId } = req.params;
-    const { page = 1, limit = 100 } = req.query;
+    const { page = 1, limit = 100, replyFilter } = req.query;
 
     // Find the SMS campaign in database
     const smsCampaign = await prisma.mauticSms.findFirst({
@@ -605,20 +669,33 @@ router.get('/sms-campaigns/:smsId/messages', async (req, res) => {
       });
     }
 
+    // Build where clause with optional reply filter
+    const whereClause = { smsId: smsCampaign.id };
+    
+    if (replyFilter && replyFilter !== 'all') {
+      whereClause.replyCategory = replyFilter;
+    }
+
     // Fetch stats from database with pagination
     const skip = (parseInt(page) - 1) * parseInt(limit);
     
-    const [stats, total, deliveredCount, failedCount] = await Promise.all([
+    // Sort: Contacts with replies first (by most recent reply), then by date sent
+    const orderBy = [
+      { repliedAt: 'desc' }, // Replied contacts first, most recent first
+      { dateSent: 'desc' }   // Then by date sent
+    ];
+    
+    const [stats, total, deliveredCount, failedCount, repliedCount] = await Promise.all([
       // Get paginated stats
       prisma.mauticSmsStat.findMany({
-        where: { smsId: smsCampaign.id },
-        orderBy: { dateSent: 'desc' },
+        where: whereClause,
+        orderBy: orderBy,
         skip: skip,
         take: parseInt(limit)
       }),
       // Get total count
       prisma.mauticSmsStat.count({
-        where: { smsId: smsCampaign.id }
+        where: whereClause
       }),
       // Get delivered count
       prisma.mauticSmsStat.count({
@@ -633,14 +710,104 @@ router.get('/sms-campaigns/:smsId/messages', async (req, res) => {
           smsId: smsCampaign.id,
           isFailed: '1'
         }
+      }),
+      // Get replied count
+      prisma.mauticSmsStat.count({
+        where: { 
+          smsId: smsCampaign.id,
+          replyText: { not: null }
+        }
       })
     ]);
+
+    // Check which leads are missing mobile numbers or message data
+    const leadsWithoutMobile = stats.filter(stat => !stat.mobile).map(stat => stat.leadId);
+    const leadsWithoutMessages = stats.filter(stat => !stat.messageText).map(stat => stat.leadId);
+    
+    // Check if this specific campaign needs syncing OR if any campaign for this client is syncing
+    const needsSync = (leadsWithoutMobile.length > 0 || leadsWithoutMessages.length > 0) && smsCampaign.clientId;
+    const clientSyncing = isClientSyncing(smsCampaign.clientId);
+    const isSyncing = needsSync || clientSyncing;
+    
+    // Fetch missing data in background (only if this campaign needs it and isn't already syncing)
+    if (needsSync && !clientSyncing) {
+      // Mark this campaign as syncing
+      markSmsAsSyncing(smsCampaign.clientId, smsCampaign.id);
+      
+      setImmediate(async () => {
+        try {
+          const client = await prisma.mauticClient.findUnique({
+            where: { id: smsCampaign.clientId }
+          });
+          
+          if (!client) {
+            markSmsAsSyncComplete(smsCampaign.clientId, smsCampaign.id);
+            return;
+          }
+
+          // Fetch mobile numbers if needed
+          if (leadsWithoutMobile.length > 0) {
+            logger.info(`📱 Fetching mobile numbers for ${leadsWithoutMobile.length} leads...`);
+            
+            const mobileMap = await mauticAPIService.fetchMobileNumbers(
+              client, 
+              leadsWithoutMobile,
+              5
+            );
+            
+            const updatePromises = [];
+            for (const [leadId, mobile] of mobileMap.entries()) {
+              if (mobile) {
+                updatePromises.push(
+                  prisma.mauticSmsStat.updateMany({
+                    where: { 
+                      smsId: smsCampaign.id,
+                      leadId: leadId
+                    },
+                    data: { mobile }
+                  })
+                );
+              }
+            }
+            
+            await Promise.all(updatePromises);
+            logger.info(`✅ Updated ${updatePromises.length} records with mobile numbers`);
+          }
+
+          // Fetch message and reply data if needed
+          if (leadsWithoutMessages.length > 0) {
+            logger.info(`📨 Fetching messages for ${leadsWithoutMessages.length} leads...`);
+            
+            const smsMessageService = (await import('../services/smsMessageService.js')).default;
+            await smsMessageService.batchFetchAndUpdateMessages(
+              client,
+              smsCampaign.id,
+              smsCampaign.mauticId,
+              leadsWithoutMessages,
+              5
+            );
+          }
+          
+          logger.info(`✅ Sync complete for SMS campaign ${smsCampaign.id}`);
+        } catch (error) {
+          logger.error('Failed to fetch missing data in background:', error.message);
+        } finally {
+          // Always mark as complete when done
+          markSmsAsSyncComplete(smsCampaign.clientId, smsCampaign.id);
+        }
+      });
+    }
 
     // Transform stats to messages array
     const messages = stats.map(stat => ({
       leadId: stat.leadId,
       dateSent: stat.dateSent ? stat.dateSent.toISOString() : null,
-      isFailed: stat.isFailed
+      isFailed: stat.isFailed,
+      mobile: stat.mobile || null,
+      messageText: stat.messageText || null,
+      replyText: stat.replyText || null,
+      replyCategory: stat.replyCategory || null,
+      repliedAt: stat.repliedAt ? stat.repliedAt.toISOString() : null
     }));
 
     res.json({
@@ -651,7 +818,13 @@ router.get('/sms-campaigns/:smsId/messages', async (req, res) => {
       limit: parseInt(limit),
       totalPages: Math.ceil(total / parseInt(limit)),
       delivered: deliveredCount,
-      failed: failedCount
+      failed: failedCount,
+      replied: repliedCount,
+      syncing: isSyncing, // Indicates if background data fetch is in progress
+      syncingDetails: isSyncing ? {
+        missingMobiles: leadsWithoutMobile.length,
+        missingMessages: leadsWithoutMessages.length
+      } : null
     });
   } catch (error) {
     logger.error('Failed to fetch SMS messages:', error);

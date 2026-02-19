@@ -19,28 +19,43 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
     const [error, setError] = useState(null);
     const [overallDelivered, setOverallDelivered] = useState(0);
     const [overallFailed, setOverallFailed] = useState(0);
+    const [overallReplied, setOverallReplied] = useState(0);
+    const [replyFilter, setReplyFilter] = useState('all'); // 'all', 'Stop', 'Unsubscribe', 'Other'
+    const [isSyncing, setIsSyncing] = useState(false); // Track if data is being synced
+    const [clientSyncing, setClientSyncing] = useState(false); // Track if any campaign for this client is syncing
 
     // For SMS-only clients, back button should go to clients list to avoid redirect loop
     const isSmsOnlyClient = selectedClient?.reportId === 'sms-only';
     const handleBack = isSmsOnlyClient ? goBackToClients : goBackToServices;
     const backButtonText = isSmsOnlyClient ? 'Back to Clients' : `Back to ${selectedClient?.name} Services`;
 
-    const openCampaignMessages = async (campaign, page = 1) => {
+    const openCampaignMessages = async (campaign, page = 1, filter = 'all') => {
         try {
             setLoading(true);
             const baseUrl = import.meta.env.VITE_API_URL || '';
             const response = await axios.get(
-                `${baseUrl}/api/mautic/sms-campaigns/${campaign.mauticId}/messages?page=${page}&limit=${itemsPerPage}`
+                `${baseUrl}/api/mautic/sms-campaigns/${campaign.mauticId}/messages`,
+                {
+                    params: {
+                        page,
+                        limit: itemsPerPage,
+                        replyFilter: filter !== 'all' ? filter : undefined
+                    }
+                }
             );
             // Update all state after data is loaded
             setSelectedCampaign(campaign);
             setCurrentPage(page);
+            setReplyFilter(filter);
             setMessages(response.data.data || []);
             setTotalRecords(response.data.total || 0);
             setTotalPages(Math.ceil((response.data.total || 0) / itemsPerPage));
             // Store overall stats if provided by API, otherwise use campaign data
             setOverallDelivered(response.data.delivered || campaign.deliveredCount || 0);
             setOverallFailed(response.data.failed || campaign.failedCount || 0);
+            setOverallReplied(response.data.replied || 0);
+            setIsSyncing(response.data.syncing || false); // Track syncing status
+            setClientSyncing(response.data.syncing || false); // Also set client syncing
             setError(null);
             // Change view only after all data is ready
             setView('messages');
@@ -54,7 +69,7 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
 
     const goToPage = (page) => {
         if (page >= 1 && page <= totalPages) {
-            openCampaignMessages(selectedCampaign, page);
+            openCampaignMessages(selectedCampaign, page, replyFilter);
             setPageInput(page.toString());
         }
     };
@@ -67,6 +82,13 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
         }
     };
 
+    const handleReplyFilterChange = (newFilter) => {
+        setReplyFilter(newFilter);
+        setCurrentPage(1);
+        setPageInput('1');
+        openCampaignMessages(selectedCampaign, 1, newFilter);
+    };
+
     const handleItemsPerPageChange = async (newItemsPerPage) => {
         if (selectedCampaign && view === 'messages') {
             setItemsPerPage(newItemsPerPage);
@@ -77,13 +99,22 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
                 setLoading(true);
                 const baseUrl = import.meta.env.VITE_API_URL || '';
                 const response = await axios.get(
-                    `${baseUrl}/api/mautic/sms-campaigns/${selectedCampaign.mauticId}/messages?page=1&limit=${newItemsPerPage}`
+                    `${baseUrl}/api/mautic/sms-campaigns/${selectedCampaign.mauticId}/messages`,
+                    {
+                        params: {
+                            page: 1,
+                            limit: newItemsPerPage,
+                            replyFilter: replyFilter !== 'all' ? replyFilter : undefined
+                        }
+                    }
                 );
                 setMessages(response.data.data || []);
                 setTotalRecords(response.data.total || 0);
                 setTotalPages(Math.ceil((response.data.total || 0) / newItemsPerPage));
                 setOverallDelivered(response.data.delivered || selectedCampaign.deliveredCount || 0);
                 setOverallFailed(response.data.failed || selectedCampaign.failedCount || 0);
+                setOverallReplied(response.data.replied || 0);
+                setIsSyncing(response.data.syncing || false);
                 setError(null);
             } catch (error) {
                 console.error('Error fetching messages:', error);
@@ -110,7 +141,7 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
             setSelectedLead(leadId);
             setLeadActivity(response.data.events || []);
             setSelectedContactInfo(response.data.contact || {});
-            
+
             setError(null);
         } catch (error) {
             console.error("Error fetching lead activity:", error);
@@ -158,6 +189,63 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
         fetchSmsCampaigns();
     }, [selectedClient?.mauticApiId]);
 
+    // Auto-refresh when syncing is in progress
+    useEffect(() => {
+        if (!isSyncing || view !== 'messages' || !selectedCampaign) return;
+
+        const refreshInterval = setInterval(() => {
+            // Silently refresh data without showing loading state
+            const baseUrl = import.meta.env.VITE_API_URL || '';
+            axios.get(
+                `${baseUrl}/api/mautic/sms-campaigns/${selectedCampaign.mauticId}/messages`,
+                {
+                    params: {
+                        page: currentPage,
+                        limit: itemsPerPage,
+                        replyFilter: replyFilter !== 'all' ? replyFilter : undefined
+                    }
+                }
+            ).then(response => {
+                setMessages(response.data.data || []);
+                setIsSyncing(response.data.syncing || false);
+                setClientSyncing(response.data.syncing || false);
+                // If syncing is complete, stop auto-refresh
+                if (!response.data.syncing) {
+                    clearInterval(refreshInterval);
+                }
+            }).catch(error => {
+                console.error('Auto-refresh failed:', error);
+            });
+        }, 5000); // Refresh every 5 seconds
+
+        return () => clearInterval(refreshInterval);
+    }, [isSyncing, view, selectedCampaign, currentPage, itemsPerPage, replyFilter]);
+
+    // Check client-wide sync status periodically
+    useEffect(() => {
+        if (!selectedClient?.mauticApiId || view !== 'messages') return;
+
+        const checkClientSync = async () => {
+            try {
+                const baseUrl = import.meta.env.VITE_API_URL || '';
+                const response = await axios.get(
+                    `${baseUrl}/api/mautic/sms-clients/${selectedClient.mauticApiId}/sync-status`
+                );
+                setClientSyncing(response.data.syncing || false);
+            } catch (error) {
+                console.error('Failed to check client sync status:', error);
+            }
+        };
+
+        // Check immediately
+        checkClientSync();
+
+        // Then check every 5 seconds
+        const interval = setInterval(checkClientSync, 5000);
+
+        return () => clearInterval(interval);
+    }, [selectedClient?.mauticApiId, view]);
+
     // Calculate metrics
     const totalCampaigns = smsCampaigns.length;
     const totalSent = smsCampaigns.reduce((sum, sms) => sum + (sms.sentCount || 0), 0);
@@ -181,8 +269,25 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
                 </h2>
                 <p className="text-sm text-gray-600 mb-6">Messages for SMS ID #{selectedCampaign.mauticId}</p>
 
+                {/* Syncing Banner */}
+                {(isSyncing || clientSyncing) && (
+                    <div className="mb-4 bg-blue-50 border border-blue-200 rounded-lg p-4 flex items-center gap-3">
+                        <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-600"></div>
+                        <div>
+                            <p className="text-sm font-medium text-blue-900">
+                                {isSyncing ? 'Syncing this campaign...' : 'Syncing other campaigns for this client...'}
+                            </p>
+                            <p className="text-xs text-blue-700">
+                                {isSyncing 
+                                    ? 'Fetching mobile numbers and message details from Mautic. This page will update automatically.'
+                                    : 'Another SMS campaign is being synced. Data will be available shortly.'}
+                            </p>
+                        </div>
+                    </div>
+                )}
+
                 {/* Metric Cards */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
                     <div className="bg-gradient-to-br from-blue-50 to-blue-100 border border-blue-200 rounded-lg p-3">
                         <div className="flex items-center justify-between">
                             <div>
@@ -200,6 +305,16 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
                                 <p className="text-2xl font-bold text-green-900">{overallDelivered.toLocaleString()}</p>
                             </div>
                             <CheckCircle className="w-8 h-8 text-green-500 opacity-50" />
+                        </div>
+                    </div>
+
+                    <div className="bg-gradient-to-br from-purple-50 to-purple-100 border border-purple-200 rounded-lg p-3">
+                        <div className="flex items-center justify-between">
+                            <div>
+                                <p className="text-sm font-medium text-purple-600">Replied</p>
+                                <p className="text-2xl font-bold text-purple-900">{overallReplied.toLocaleString()}</p>
+                            </div>
+                            <MessageCircle className="w-8 h-8 text-purple-500 opacity-50" />
                         </div>
                     </div>
 
@@ -224,7 +339,22 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
                             </p>
                         </div>
 
-                        <div className="flex items-center gap-4">
+                        <div className="flex items-center gap-4 flex-wrap">
+                            {/* Reply Filter */}
+                            <div className="flex items-center gap-2">
+                                <span className="text-sm text-gray-600">Reply Filter:</span>
+                                <select
+                                    value={replyFilter}
+                                    onChange={(e) => handleReplyFilterChange(e.target.value)}
+                                    className="px-3 py-1 border border-gray-300 rounded-lg text-sm"
+                                >
+                                    <option value="all">All Messages</option>
+                                    <option value="Stop">Stop</option>
+                                    <option value="Unsubscribe">Unsubscribe</option>
+                                    <option value="Other">Other Replies</option>
+                                </select>
+                            </div>
+
                             {/* Per Page Selector */}
                             <div className="flex items-center gap-2">
                                 <span className="text-sm text-gray-600">Per page:</span>
@@ -261,8 +391,19 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
                     </div>
 
                     {loading ? (
-                        <div className="flex justify-center items-center h-64">
-                            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+                        <div className="flex flex-col justify-center items-center h-64">
+                            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mb-4"></div>
+                            <p className="text-gray-600 text-sm">Loading SMS messages...</p>
+                        </div>
+                    ) : messages.length === 0 ? (
+                        <div className="flex flex-col justify-center items-center h-64">
+                            <MessageCircle className="w-16 h-16 text-gray-300 mb-4" />
+                            <p className="text-gray-600 text-lg font-medium mb-2">No messages found</p>
+                            <p className="text-gray-500 text-sm">
+                                {replyFilter !== 'all' 
+                                    ? `No messages with "${replyFilter}" replies found for this campaign.`
+                                    : 'No messages found for this campaign.'}
+                            </p>
                         </div>
                     ) : (
                         <div className="overflow-auto flex-1">
@@ -270,6 +411,9 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
                                 <thead className="bg-gray-50 border-b border-gray-200">
                                     <tr>
                                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Lead ID</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Mobile Number</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Message Text</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Reply Text</th>
                                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date Sent</th>
                                         <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">Status</th>
                                         <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">Actions</th>
@@ -282,7 +426,45 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
                                                 <span className="text-sm font-medium text-gray-900">{msg.leadId}</span>
                                             </td>
                                             <td className="px-4 py-3">
-                                                <span className="text-sm text-gray-600">{msg.dateSent}</span>
+                                                <span className="text-sm text-gray-900">{msg.mobile || '-'}</span>
+                                            </td>
+                                            <td className="px-4 py-3 max-w-xs">
+                                                <div className="text-sm text-gray-700 truncate" title={msg.messageText}>
+                                                    {msg.messageText ? (
+                                                        msg.messageText.length > 20 
+                                                            ? msg.messageText.substring(0, 20) + '...' 
+                                                            : msg.messageText
+                                                    ) : (
+                                                        <span className="text-gray-400 italic">No message</span>
+                                                    )}
+                                                </div>
+                                            </td>
+                                            <td className="px-4 py-3 max-w-xs">
+                                                {msg.replyText ? (
+                                                    <div>
+                                                        <div className="text-sm text-gray-700 truncate" title={msg.replyText}>
+                                                            {msg.replyText.length > 10 
+                                                                ? msg.replyText.substring(0, 10) + '...' 
+                                                                : msg.replyText}
+                                                        </div>
+                                                        {/* {msg.replyCategory && (
+                                                            <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium mt-1 ${
+                                                                msg.replyCategory === 'Stop' 
+                                                                    ? 'bg-red-100 text-red-800' 
+                                                                    : msg.replyCategory === 'Unsubscribe'
+                                                                    ? 'bg-orange-100 text-orange-800'
+                                                                    : 'bg-blue-100 text-blue-800'
+                                                            }`}>
+                                                                {msg.replyCategory}
+                                                            </span>
+                                                        )} */}
+                                                    </div>
+                                                ) : (
+                                                    <span className="text-gray-400 italic text-sm">No reply</span>
+                                                )}
+                                            </td>
+                                            <td className="px-4 py-3">
+                                                <span className="text-sm text-gray-600">{msg.dateSent ? new Date(msg.dateSent).toLocaleString() : '-'}</span>
                                             </td>
                                             <td className="px-4 py-3 text-center">
                                                 <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium ${msg.isFailed === '0' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
@@ -336,8 +518,8 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
 
     // VIEW 3: LEAD ACTIVITY
     if (view === 'activity') {
-        const smsEvents = leadActivity.filter(e => e.event && e.event.includes('sms'));
-        const repliedEvents = leadActivity.filter(e => e.event === 'sms.replied');
+        const smsEvents = leadActivity.filter(e => e.event === 'sms.sent');
+        const repliedEvents = leadActivity.filter(e => e.event === 'sms_reply');
 
         return (
             <div className="animate-fade-in">
@@ -413,7 +595,7 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
                         <div className="px-6 py-4">
                             <div className="space-y-4">
                                 {leadActivity.map((event, idx) => {
-                                    const isSmsEvent = event.event && event.event.includes('sms.sent');
+                                    const isSmsEvent = event.event === 'sms.sent';
                                     const isReply = event.event === 'sms_reply';
 
                                     return (

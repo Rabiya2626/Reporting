@@ -281,7 +281,7 @@ router.get("/clients/:clientId/email-reports", async (req, res) => {
 
     const where = { clientId: parseInt(clientId) };
 
-    // Add date range filter
+    // Add date range filter on dateSent
     if (fromDate || toDate) {
       where.dateSent = {};
       if (fromDate) {
@@ -296,7 +296,7 @@ router.get("/clients/:clientId/email-reports", async (req, res) => {
       }
     }
 
-    // ✅ Aggregate counts grouped by eId
+    // Use raw MauticEmailReport table for accurate date filtering
     const aggregated = await prisma.mauticEmailReport.groupBy({
       by: ["eId"],
       where,
@@ -306,7 +306,7 @@ router.get("/clients/:clientId/email-reports", async (req, res) => {
       },
     });
 
-    // Optional: fetch email metadata (subject/emailAddress)
+    // Get email metadata
     const uniqueEids = aggregated.map((a) => a.eId).filter(Boolean);
     const emailMeta = await prisma.mauticEmailReport.findMany({
       where: { eId: { in: uniqueEids } },
@@ -316,7 +316,6 @@ router.get("/clients/:clientId/email-reports", async (req, res) => {
 
     const metaMap = new Map(emailMeta.map((e) => [e.eId, e]));
 
-    // Normalize for frontend
     const normalized = aggregated.map((a) => ({
       eId: a.eId,
       sentCount: a._count.eId || 0,
@@ -331,7 +330,7 @@ router.get("/clients/:clientId/email-reports", async (req, res) => {
       totalEmails: normalized.length,
     });
   } catch (error) {
-    logger.error("❌ Error fetching aggregated Mautic reports:", error);
+    logger.error("❌ Error fetching email reports:", error);
     res.status(500).json({
       success: false,
       message: "Failed to fetch email reports",
