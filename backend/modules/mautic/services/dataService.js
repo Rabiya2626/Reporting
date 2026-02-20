@@ -464,38 +464,145 @@ class MauticDataService {
    */
   async saveClickTrackables(clientId, clickRows) {
     try {
+      console.log(`\n   💾 [saveClickTrackables] Starting save process...`);
+      console.log(`      Client ID: ${clientId}`);
+      console.log(`      Total records to save: ${clickRows?.length || 0}`);
+      
       if (!clickRows || clickRows.length === 0) {
-        return { success: true, created: 0, total: 0 };
+        console.log('      ℹ️  No click trackables to save - returning early');
+        return { success: true, created: 0, skipped: 0, total: 0 };
       }
 
       const BATCH_SIZE = 1000;
       let totalCreated = 0;
+      let totalSkipped = 0;
+      let totalInvalid = 0;
       const now = new Date();
 
+      console.log(`      Batch size: ${BATCH_SIZE}`);
+      console.log(`      Total batches: ${Math.ceil(clickRows.length / BATCH_SIZE)}`);
+
       for (let i = 0; i < clickRows.length; i += BATCH_SIZE) {
+        const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
         const batch = clickRows.slice(i, i + BATCH_SIZE);
-        const data = batch.map(r => ({
-          redirectId: String(r.redirect_id || r.redirectId || ''),
-          hits: parseInt(r.hits || r.hits === 0 ? r.hits : 0, 10) || 0,
-          uniqueHits: parseInt(r.unique_hits || r.uniqueHits || 0, 10) || 0,
-          channelId: parseInt(r.channel_id || r.channelId || 0, 10) || 0,
-          url: r.url || null,
-          clientId: clientId,
-          createdAt: now,
-          updatedAt: now
-        }));
+        
+        console.log(`\n      📦 Batch ${batchNumber}/${Math.ceil(clickRows.length / BATCH_SIZE)}: Processing ${batch.length} records (${i + 1}-${Math.min(i + BATCH_SIZE, clickRows.length)})...`);
+        
+        // Map and validate records
+        const data = [];
+        let batchInvalid = 0;
+        
+        for (let j = 0; j < batch.length; j++) {
+          const r = batch[j];
+          const mapped = {
+            redirectId: String(r.redirect_id || r.redirectId || ''),
+            hits: parseInt(r.hits || r.hits === 0 ? r.hits : 0, 10) || 0,
+            uniqueHits: parseInt(r.unique_hits || r.uniqueHits || 0, 10) || 0,
+            channelId: parseInt(r.channel_id || r.channelId || 0, 10) || 0,
+            url: r.url || null,
+            clientId: clientId,
+            createdAt: now,
+            updatedAt: now
+          };
+          
+          // Validate
+          if (!mapped.redirectId || mapped.channelId <= 0) {
+            batchInvalid++;
+            if (batchInvalid <= 3) { // Only log first 3 invalid per batch
+              console.log(`         ⚠️  Invalid record [${j + 1}]: redirectId="${mapped.redirectId}", channelId=${mapped.channelId}`);
+            }
+            continue;
+          }
+          
+          data.push(mapped);
+        }
+        
+        totalInvalid += batchInvalid;
+        
+        if (batchInvalid > 0) {
+          console.log(`         ⚠️  Filtered out ${batchInvalid} invalid records from batch`);
+        }
+
+        if (data.length === 0) {
+          console.warn(`         ⚠️  Batch ${batchNumber}: All ${batch.length} records were invalid - skipping database insert`);
+          totalSkipped += batch.length;
+          continue;
+        }
+
+        console.log(`         ✅ Validated: ${data.length} valid records ready for upsert`);
+        console.log(`         📊 Sample: channelId=${data[0].channelId}, redirectId=${data[0].redirectId}, hits=${data[0].hits}, unique=${data[0].uniqueHits}`);
 
         try {
-          const res = await prisma.mauticClickTrackable.createMany({ data, skipDuplicates: true });
-          totalCreated += res.count;
+          // Use upsert to always update to latest counts (instead of skipDuplicates)
+          let batchCreated = 0;
+          let batchUpdated = 0;
+          let batchErrors = 0;
+          
+          console.log(`         🔄 Processing ${data.length} records with upsert (update to latest counts)...`);
+          
+          for (const record of data) {
+            try {
+              const result = await prisma.mauticClickTrackable.upsert({
+                where: {
+                  clientId_redirectId: {
+                    clientId: record.clientId,
+                    redirectId: record.redirectId
+                  }
+                },
+                update: {
+                  hits: record.hits,
+                  uniqueHits: record.uniqueHits,
+                  channelId: record.channelId,
+                  url: record.url,
+                  updatedAt: now
+                },
+                create: record
+              });
+              
+              // Check if it was created or updated by comparing timestamps
+              const isNew = result.createdAt.getTime() === now.getTime();
+              if (isNew) {
+                batchCreated++;
+              } else {
+                batchUpdated++;
+              }
+            } catch (upsertErr) {
+              batchErrors++;
+              if (batchErrors <= 3) {
+                console.error(`         ⚠️  Upsert failed for redirectId ${record.redirectId}:`, upsertErr.message);
+              }
+            }
+          }
+          
+          totalCreated += batchCreated;
+          totalSkipped += batchUpdated; // "skipped" now means "updated" for backward compat
+          
+          console.log(`         💾 Database result: ${batchCreated} created, ${batchUpdated} updated, ${batchErrors} errors`);
+          
         } catch (err) {
-          console.error('Error saving click trackables batch:', err.message || err);
+          console.error(`         ❌ Database error in batch ${batchNumber}:`, err.message || err);
+          if (err.code) {
+            console.error(`            Error code: ${err.code}`);
+          }
+          if (err.meta) {
+            console.error(`            Error meta:`, err.meta);
+          }
+          totalSkipped += data.length;
         }
       }
 
-      return { success: true, created: totalCreated, total: clickRows.length };
+      console.log(`\n      ✅ [saveClickTrackables] Save process complete:`);
+      console.log(`         Total input: ${clickRows.length}`);
+      console.log(`         Invalid filtered: ${totalInvalid}`);
+      console.log(`         Created in DB: ${totalCreated}`);
+      console.log(`         Updated in DB: ${totalSkipped}`); // Changed from "Skipped (duplicates)" to "Updated"
+      console.log(`         Total processed: ${totalCreated + totalSkipped}/${clickRows.length}`);
+      console.log(`         Success rate: ${(((totalCreated + totalSkipped) / clickRows.length) * 100).toFixed(1)}%`);
+
+      return { success: true, created: totalCreated, updated: totalSkipped, invalid: totalInvalid, total: clickRows.length };
     } catch (error) {
-      console.error('Error saving click trackables:', error);
+      console.error('\n      ❌ [saveClickTrackables] Fatal error:', error.message);
+      console.error('         Stack:', error.stack);
       throw new Error(`Failed to save click trackables: ${error.message}`);
     }
   }

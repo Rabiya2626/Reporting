@@ -5,7 +5,7 @@ import encryptionService from './encryption.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
-import pLimit from 'p-limit';
+// pLimit removed - no longer using concurrency, pure sequential processing
 import prisma from '../../../prisma/client.js';
 import logger from '../../../utils/logger.js';
 
@@ -238,28 +238,29 @@ class MauticAPIService {
       const apiClient = this.createClient(client);
       const limit = 200000;
 
-      // Fetch with retry logic
-      const [emailStatsResp, pageHitsResp] = await this.retryWithBackoff(async () => {
-        return Promise.all([
-          apiClient.get('/stats/email_stats', {
-            params: {
-              start: 0,
-              limit: limit,
-              'where[0][col]': 'email_id',
-              'where[0][expr]': 'eq',
-              'where[0][val]': emailId
-            }
-          }),
-          apiClient.get('/stats/page_hits', {
-            params: {
-              start: 0,
-              limit: limit,
-              'where[0][col]': 'email_id',
-              'where[0][expr]': 'eq',
-              'where[0][val]': emailId
-            }
-          })
-        ]);
+      // Fetch with retry logic - Sequential for data integrity
+      const emailStatsResp = await this.retryWithBackoff(async () => {
+        return apiClient.get('/stats/email_stats', {
+          params: {
+            start: 0,
+            limit: limit,
+            'where[0][col]': 'email_id',
+            'where[0][expr]': 'eq',
+            'where[0][val]': emailId
+          }
+        });
+      });
+
+      const pageHitsResp = await this.retryWithBackoff(async () => {
+        return apiClient.get('/stats/page_hits', {
+          params: {
+            start: 0,
+            limit: limit,
+            'where[0][col]': 'email_id',
+            'where[0][expr]': 'eq',
+            'where[0][val]': emailId
+          }
+        });
       });
 
       const emailStats = emailStatsResp.data.stats || [];
@@ -434,17 +435,25 @@ class MauticAPIService {
       const apiClient = this.createClient(client);
       const clickRows = [];
 
-      // ⚡ OPTIMIZATION: Increase concurrency for faster fetching
-      const CONCURRENCY = Math.max(1, parseInt('1', 10));
-      const limiter = pLimit(CONCURRENCY);
+      // Pure SEQUENTIAL processing (no pLimit, no Promise.all)
+      console.log(`   🔍 Processing mode: Pure sequential (one email at a time, no concurrency)`);
 
       const fetchStartTime = Date.now();
 
-      // Fetch all emails in parallel with concurrency limit
-      const tasks = emails.map((email, index) => limiter(async () => {
+      // Process each email one by one (pure sequential)
+      for (let index = 0; index < emails.length; index++) {
+        const email = emails[index];
+        
         try {
           const emailId = email.id || email.mauticEmailId || email.e_id;
-          if (!emailId) return [];
+          const emailName = email.name || 'Unnamed';
+          
+          if (!emailId) {
+            console.log(`   ⚠️  [${index + 1}/${emails.length}] Skipping - No email ID found`);
+            continue;
+          }
+
+          console.log(`   📧 [${index + 1}/${emails.length}] Fetching click data for email ID: ${emailId} (${emailName.substring(0, 50)})`);
 
           const resp = await apiClient.get('/stats/channel_url_trackables', {
             params: {
@@ -455,56 +464,112 @@ class MauticAPIService {
             }
           });
 
-          const rows = resp.data?.stats || resp.data || [];
-          const mapped = rows.map(r => ({
-            redirect_id: r.redirect_id || r.id || r.redirectId || '',
-            hits: parseInt(r.hits || r.hits_count || 0, 10) || 0,
-            unique_hits: parseInt(r.unique_hits || r.unique_hits_count || r.uniqueHits || 0, 10) || 0,
-            channel_id: parseInt(emailId, 10) || 0,
-            url: r.url || r.path || null
-          }));
-
-          // Log progress every 50 emails
-          if ((index + 1) % 50 === 0 || index + 1 === emails.length) {
-            console.log(`   Processed ${index + 1}/${emails.length} emails...`);
+          const rawRows = resp.data?.stats || resp.data || [];
+          console.log(`      ✅ Received ${rawRows.length} click trackable records from API`);
+          
+          if (rawRows.length > 0) {
+            console.log(`      📊 Sample: redirectId=${rawRows[0].redirect_id}, hits=${rawRows[0].hits}, uniqueHits=${rawRows[0].unique_hits}`);
           }
 
-          return mapped;
+          const mapped = rawRows.map((r, rIndex) => {
+            const record = {
+              redirect_id: r.redirect_id || r.id || r.redirectId || '',
+              hits: parseInt(r.hits || r.hits_count || 0, 10) || 0,
+              unique_hits: parseInt(r.unique_hits || r.unique_hits_count || r.uniqueHits || 0, 10) || 0,
+              channel_id: parseInt(emailId, 10) || 0,
+              url: r.url || r.path || null
+            };
+            
+            // Log invalid records
+            if (!record.redirect_id || !record.channel_id) {
+              console.log(`      ⚠️  Invalid record [${rIndex}]: redirectId=${record.redirect_id}, channelId=${record.channel_id}`);
+            }
+            
+            return record;
+          });
+
+          clickRows.push(...mapped);
         } catch (e) {
-          console.warn(`   Failed to fetch click stats for email ${email.id}:`, e.message || e);
-          return [];
+          console.error(`   ❌ [${index + 1}/${emails.length}] Failed to fetch click stats for email ${email.id}:`, e.message || e);
+          if (e.response) {
+            console.error(`      HTTP Status: ${e.response.status}, Data:`, e.response.data);
+          }
         }
-      }));
-
-      const results = await Promise.all(tasks);
-
-      for (const rows of results) {
-        if (Array.isArray(rows)) clickRows.push(...rows);
       }
 
       const fetchDuration = ((Date.now() - fetchStartTime) / 1000).toFixed(2);
-      console.log(`   ✅ Fetched ${clickRows.length} click records in ${fetchDuration}s (${CONCURRENCY}x concurrency)`);
+      console.log(`   ✅ Collection complete: ${clickRows.length} total click records from ${emails.length} emails in ${fetchDuration}s`);
+      console.log(`   📊 Average: ${(clickRows.length / emails.length).toFixed(1)} records per email`);
 
-      // Deduplicate rows by redirect_id
+      // Deduplicate rows by composite key (clientId + channelId + redirectId)
+      // This prevents losing data when same redirectId appears in different emails
+      console.log(`\n   🔄 Starting deduplication process...`);
+      console.log(`      Input: ${clickRows.length} records`);
+      
       const dedupMap = new Map();
+      let duplicateCount = 0;
+      let invalidCount = 0;
+      
       for (const row of clickRows) {
-        const key = String(row.redirect_id || `${row.channel_id}-${row.url}`);
-        if (!dedupMap.has(key)) dedupMap.set(key, row);
-        else {
+        // Validate record
+        if (!row.redirect_id || !row.channel_id) {
+          invalidCount++;
+          console.log(`      ⚠️  Skipping invalid record: redirectId=${row.redirect_id}, channelId=${row.channel_id}`);
+          continue;
+        }
+        
+        // Create composite key to preserve per-email click data
+        const key = `${client.id}|${row.channel_id}|${row.redirect_id}`;
+        
+        if (!dedupMap.has(key)) {
+          dedupMap.set(key, row);
+        } else {
+          duplicateCount++;
+          // If duplicate within same email, keep max values
           const existing = dedupMap.get(key);
+          const oldHits = existing.hits;
+          const oldUniqueHits = existing.unique_hits;
+          
           existing.hits = Math.max(existing.hits, row.hits || 0);
           existing.unique_hits = Math.max(existing.unique_hits, row.unique_hits || 0);
+          
+          if (existing.hits !== oldHits || existing.unique_hits !== oldUniqueHits) {
+            console.log(`      🔄 Updated duplicate: channelId=${row.channel_id}, redirectId=${row.redirect_id}`);
+            console.log(`         Hits: ${oldHits} → ${existing.hits}, UniqueHits: ${oldUniqueHits} → ${existing.unique_hits}`);
+          }
         }
       }
+      
       const deduped = Array.from(dedupMap.values());
+      console.log(`      ✅ Deduplication complete:`);
+      console.log(`         Original: ${clickRows.length}`);
+      console.log(`         Invalid: ${invalidCount}`);
+      console.log(`         Duplicates: ${duplicateCount}`);
+      console.log(`         Final unique: ${deduped.length}`);
 
-      console.log(`   Deduplication: ${clickRows.length} → ${deduped.length} unique records`);
-
+      console.log(`\n   💾 Saving ${deduped.length} unique records to database...`);
       const saveResult = await dataService.saveClickTrackables(client.id, deduped);
-      console.log(`✅ Click trackables saved: ${saveResult.created} records`);
+      
+      console.log(`\n✅ Click trackables processing complete:`);
+      console.log(`   📊 Summary:`);
+      console.log(`      - API returned: ${clickRows.length} records`);
+      console.log(`      - After deduplication: ${deduped.length} unique`);
+      console.log(`      - Created in DB: ${saveResult.created}`);
+      console.log(`      - Updated in DB: ${saveResult.updated || 0}`);
+      console.log(`      - Total processed: ${(saveResult.created || 0) + (saveResult.updated || 0)}/${deduped.length}`);
+      
+      if ((saveResult.created === 0 && saveResult.updated === 0) && deduped.length > 0) {
+        console.warn(`\n⚠️  WARNING: ${deduped.length} trackables processed but 0 saved/updated!`);
+        console.warn(`   Possible reasons:`);
+        console.warn(`   - Database errors (check logs above)`);
+        console.warn(`   - Invalid data (check validation errors)`);
+        console.warn(`   - Constraint violations`);
+      }
+      
       return saveResult;
     } catch (error) {
-      console.error('Error fetching click trackables:', error.message || error);
+      console.error('❌ Error fetching click trackables:', error.message || error);
+      console.error('Stack trace:', error.stack);
       return { success: false, error: error.message };
     }
   }
@@ -564,13 +629,15 @@ class MauticAPIService {
 
       // ⚡ COUNT CONTACTS FOR EACH SEGMENT
       console.log(`\n🔍 Counting contacts for each segment...`);
+      console.log(`   📊 Processing mode: Pure sequential (one segment at a time)`);
 
-      // ⚡ HIGH concurrency for ultra-fast contact counting
-      const CONCURRENCY = Math.max(1, parseInt('1', 10)); // ⚡ 4x faster!
-      const pLimiter = pLimit(CONCURRENCY);
-
-      const tasks = segments.map(segment => pLimiter(async () => {
+      // Process each segment one by one (pure sequential)
+      for (let i = 0; i < segments.length; i++) {
+        const segment = segments[i];
+        
         try {
+          console.log(`   📋 [${i + 1}/${segments.length}] Counting contacts for: ${segment.name}`);
+          
           // Query contacts API filtered by segment to get count
           const contactResponse = await apiClient.get('/contacts', {
             params: {
@@ -588,23 +655,20 @@ class MauticAPIService {
           segment.leadCount = count;
 
           if (count > 0) {
-            console.log(`   ✅ ${segment.name}: ${count} contacts`);
+            console.log(`      ✅ ${segment.name}: ${count} contacts`);
           } else {
-            console.log(`   ⚪ ${segment.name}: 0 contacts`);
+            console.log(`      ⚪ ${segment.name}: 0 contacts`);
           }
         } catch (error) {
-          console.error(`   ⚠️  Failed to count for segment ${segment.id} (${segment.name}): ${error.message}`);
+          console.error(`      ⚠️  Failed to count for segment ${segment.id} (${segment.name}): ${error.message}`);
           segment.leadCount = 0;
         }
-        return segment;
-      }));
+      }
 
-      const segmentsWithCounts = await Promise.all(tasks);
-
-      const totalContacts = segmentsWithCounts.reduce((sum, seg) => sum + (seg.leadCount || 0), 0);
+      const totalContacts = segments.reduce((sum, seg) => sum + (seg.leadCount || 0), 0);
       console.log(`\n✅ Contact count complete! Total across all segments: ${totalContacts}`);
 
-      return segmentsWithCounts;
+      return segments;
     } catch (error) {
       console.error('Error fetching segments:', error.message);
       throw new Error(`Failed to fetch segments: ${error.message}`);
@@ -798,7 +862,10 @@ class MauticAPIService {
       // Bound the limit to a sensible default if caller passed something too large
       const PAGE_LIMIT = Math.max(1000, Math.min(parseInt(limit, 10) || 5000, 200000));
       const RETRIES = 6;
-      const CONCURRENCY = parseInt('20', 10);
+      const CONCURRENCY = 1; // ⚠️ CRITICAL: Sequential to prevent database race conditions
+      
+      console.log(`⚠️  Historical fetch mode: SEQUENTIAL (CONCURRENCY=1) to prevent data loss`);
+      console.log(`   This ensures saveEmailReports() doesn't have concurrent write conflicts`);
 
       const baseTemp = path.join(__dirname, '..', '..', '.temp_pages');
       if (!fs.existsSync(baseTemp)) {
@@ -860,7 +927,8 @@ class MauticAPIService {
         }
       }
 
-      console.log(`📅 Fetching historical reports (page-mode) ${fromDate} → ${toDate} for ${client.name} (pageLimit=${PAGE_LIMIT}, concurrency=${CONCURRENCY})`);
+      console.log(`📅 Fetching historical reports (page-mode) ${fromDate} → ${toDate} for ${client.name}`);
+      console.log(`   Page limit: ${PAGE_LIMIT}, Concurrency: ${CONCURRENCY} (sequential for safety)`);
 
       // fetch first page to know totals
       const first = await fetchPage(1);
@@ -885,29 +953,33 @@ class MauticAPIService {
       }
 
       if (totalPages > 1) {
-        const limiter = pLimit(CONCURRENCY);
-        const tasks = [];
+        console.log(`   🔄 Processing ${totalPages - 1} additional pages sequentially (one by one)...`);
+        
+        // Process each page one by one (pure sequential)
         for (let p = 2; p <= totalPages; p++) {
-          tasks.push(limiter(async () => {
+          try {
+            console.log(`      📄 Page ${p}/${totalPages}: Fetching from Mautic...`);
             const payload = await fetchPage(p);
-            if (!payload || !Array.isArray(payload.data)) return { created: 0, skipped: 0 };
-            savePage(p, payload);
-            try {
-              const r = await dataService.saveEmailReports(client.id, payload.data);
-              return r;
-            } catch (e) {
-              console.error(`Error saving page ${p} for ${monthKey}:`, e.message);
-              // try once per-row fallback inside dataService.saveEmailReports already handles failures
-              return { created: 0, skipped: 0 };
+            
+            if (!payload || !Array.isArray(payload.data)) {
+              console.warn(`      ⚠️  Page ${p}: No data returned`);
+              continue;
             }
-          }));
-        }
-
-        const results = await Promise.all(tasks);
-        for (const r of results) {
-          if (r) {
-            totalCreated += r.created || 0;
-            totalSkipped += r.skipped || 0;
+            
+            console.log(`      ✅ Page ${p}: Fetched ${payload.data.length} records`);
+            savePage(p, payload);
+            
+            try {
+              console.log(`      💾 Page ${p}: Saving to database...`);
+              const r = await dataService.saveEmailReports(client.id, payload.data);
+              console.log(`      ✅ Page ${p}: Saved ${r.created} new, ${r.skipped} skipped`);
+              totalCreated += r.created || 0;
+              totalSkipped += r.skipped || 0;
+            } catch (e) {
+              console.error(`      ❌ Page ${p}: Save error - ${e.message}`);
+            }
+          } catch (e) {
+            console.error(`      ❌ Page ${p}: Fetch error - ${e.message}`);
           }
         }
       }
@@ -1068,38 +1140,51 @@ class MauticAPIService {
       // The /api/emails endpoint is fast and doesn't require individual /api/stats calls
       // Only campaigns and segments are skipped on incremental sync (rarely change)
       if (!hasExistingData) {
-        // Full initial sync: fetch all metadata
-        console.log(`🚀 INITIAL SYNC - Fetching metadata (emails/campaigns/segments${shouldSkipSms ? '' : '/SMS'})...`);
-        const fetchTasks = [
-          this.fetchEmails(client, false), // ⚡ FALSE = NO individual stats fetch!
-          this.fetchCampaigns(client),
-          this.fetchSegments(client)
-        ];
-
+        // Full initial sync: fetch all metadata SEQUENTIALLY (step by step)
+        console.log(`🚀 INITIAL SYNC - Fetching metadata sequentially (step by step)${shouldSkipSms ? '' : ' including SMS'}...`);
+        
+        console.log(`\n📧 Step 1/4: Fetching emails...`);
+        emails = await this.fetchEmails(client, false); // ⚡ FALSE = NO individual stats fetch!
+        console.log(`   ✅ Fetched ${emails.length} emails`);
+        
+        console.log(`\n🎯 Step 2/4: Fetching campaigns...`);
+        campaigns = await this.fetchCampaigns(client);
+        console.log(`   ✅ Fetched ${campaigns.length} campaigns`);
+        
+        console.log(`\n📋 Step 3/4: Fetching segments...`);
+        segments = await this.fetchSegments(client);
+        console.log(`   ✅ Fetched ${segments.length} segments`);
+        
         // ✅ Only fetch SMS if no SMS-only client exists with same URL
         if (!shouldSkipSms) {
-          fetchTasks.push(this.fetchSmses(client));
+          console.log(`\n📱 Step 4/4: Fetching SMS campaigns...`);
+          smsCampaigns = await this.fetchSmses(client);
+          console.log(`   ✅ Fetched ${smsCampaigns.length} SMS campaigns`);
+        } else {
+          console.log(`\n📱 Step 4/4: Skipping SMS (SMS-only client exists)`);
+          smsCampaigns = [];
         }
-
-        const results = await Promise.all(fetchTasks);
-        emails = results[0] || [];
-        campaigns = results[1] || [];
-        segments = results[2] || [];
-        smsCampaigns = shouldSkipSms ? [] : (results[3] || []);
+        
+        console.log(`\n✅ Metadata fetch complete (sequential)`);
       } else {
-        // Incremental sync: fetch emails AND SMS (to update stats), skip campaigns/segments
-        console.log(`🔄 INCREMENTAL SYNC for ${client.name} — fetching emails${shouldSkipSms ? '' : ' and SMS'} to update stats...`);
-        const fetchTasks = [this.fetchEmails(client, false)];
-
+        // Incremental sync: fetch emails AND SMS sequentially (to update stats), skip campaigns/segments
+        console.log(`🔄 INCREMENTAL SYNC for ${client.name} — fetching sequentially...`);
+        
+        console.log(`\n📧 Step 1: Fetching emails to update stats...`);
+        emails = await this.fetchEmails(client, false);
+        console.log(`   ✅ Fetched ${emails.length} emails`);
+        
         // ✅ Only fetch SMS if no SMS-only client exists with same URL
         if (!shouldSkipSms) {
-          fetchTasks.push(this.fetchSmses(client));
+          console.log(`\n📱 Step 2: Fetching SMS campaigns to update stats...`);
+          smsCampaigns = await this.fetchSmses(client);
+          console.log(`   ✅ Fetched ${smsCampaigns.length} SMS campaigns`);
+        } else {
+          console.log(`\n📱 Step 2: Skipping SMS (SMS-only client exists)`);
+          smsCampaigns = [];
         }
-
-        const results = await Promise.all(fetchTasks);
-        emails = results[0] || [];
-        smsCampaigns = shouldSkipSms ? [] : (results[1] || []);
-        console.log(`   ⚡ Fetched ${emails.length} emails${shouldSkipSms ? '' : ` and ${smsCampaigns.length} SMS campaigns`} for stats update`);
+        
+        console.log(`\n✅ Incremental fetch complete (sequential)`);
       }
 
       // Persist emails to DB (upsert will update sentCount, readCount, etc.)
@@ -1160,61 +1245,108 @@ class MauticAPIService {
       // Fetch click trackables for emails (if we fetched metadata)
       try {
         if (emails && emails.length > 0) {
-          await this.fetchAllEmailClickStats(client, emails);
+          console.log(`\n📊 Processing click trackables for ${emails.length} emails...`);
+          
+          const clickFetchResult = await this.fetchAllEmailClickStats(client, emails);
+          
+          if (!clickFetchResult.success) {
+            console.warn(`   ⚠️  Click fetch reported failure: ${clickFetchResult.error}`);
+          }
 
           // Aggregate click trackables and update email records with clickedCount AND uniqueClicks
-          console.log(`📊 Aggregating total clicks and unique clicks into email records...`);
+          console.log(`\n📊 Aggregating click data from database...`);
+          console.log(`   🔍 Looking up click data for ${emails.length} emails...`);
+          
           const emailIds = emails.map(e => parseInt(e.id, 10)).filter(Boolean);
-          const clickAggregates = await prisma.mauticClickTrackable.groupBy({
-            by: ['channelId'],
-            where: { channelId: { in: emailIds }, clientId: client.id },
-            _sum: {
-              hits: true,        // Total clicks (clickedCount)
-              uniqueHits: true   // Unique clicks
+          console.log(`   📧 Valid email IDs to aggregate: ${emailIds.length}`);
+          
+          if (emailIds.length === 0) {
+            console.warn(`   ⚠️  No valid email IDs found - skipping aggregation`);
+          } else {
+            const clickAggregates = await prisma.mauticClickTrackable.groupBy({
+              by: ['channelId'],
+              where: { channelId: { in: emailIds }, clientId: client.id },
+              _sum: {
+                hits: true,        // Total clicks (clickedCount)
+                uniqueHits: true   // Unique clicks
+              }
+            });
+
+            console.log(`   ✅ Aggregation complete: Found click data for ${clickAggregates.length} emails`);
+            
+            if (clickAggregates.length > 0) {
+              // Log sample
+              const sample = clickAggregates[0];
+              console.log(`   📊 Sample: channelId=${sample.channelId}, totalHits=${sample._sum.hits}, uniqueHits=${sample._sum.uniqueHits}`);
             }
-          });
 
-          const clickMap = new Map(clickAggregates.map(agg => [
-            String(agg.channelId),
-            {
-              clickedCount: parseInt(agg._sum.hits || 0, 10),
-              uniqueClicks: parseInt(agg._sum.uniqueHits || 0, 10)
-            }
-          ]));
+            const clickMap = new Map(clickAggregates.map(agg => [
+              String(agg.channelId),
+              {
+                clickedCount: parseInt(agg._sum.hits || 0, 10),
+                uniqueClicks: parseInt(agg._sum.uniqueHits || 0, 10)
+              }
+            ]));
 
-          let updatedCount = 0;
-          for (const email of emails) {
-            const emailId = String(email.id);
-            const clickData = clickMap.get(emailId);
-            if (clickData && (clickData.clickedCount > 0 || clickData.uniqueClicks > 0)) {
-              try {
-                const sentCount = parseInt(email.sentCount || 0, 10);
-                const clickRate = sentCount > 0
-                  ? parseFloat(((clickData.clickedCount / sentCount) * 100).toFixed(2))
-                  : 0;
+            console.log(`   🗺️  Created click map with ${clickMap.size} entries`);
+            
+            let updatedCount = 0;
+            let skippedCount = 0;
+            
+            console.log(`\n   💾 Updating email records with click data...`);
+            
+            for (const email of emails) {
+              const emailId = String(email.id);
+              const clickData = clickMap.get(emailId);
+              
+              if (clickData && (clickData.clickedCount > 0 || clickData.uniqueClicks > 0)) {
+                try {
+                  const sentCount = parseInt(email.sentCount || 0, 10);
+                  const clickRate = sentCount > 0
+                    ? parseFloat(((clickData.clickedCount / sentCount) * 100).toFixed(2))
+                    : 0;
 
-                const res = await prisma.mauticEmail.updateMany({
-                  where: {
-                    clientId: client.id,
-                    mauticEmailId: String(emailId)
-                  },
-                  data: {
-                    clickedCount: clickData.clickedCount,
-                    uniqueClicks: clickData.uniqueClicks,
-                    clickRate: clickRate
+                  console.log(`      📧 Email ${emailId}: Updating with ${clickData.clickedCount} clicks (${clickData.uniqueClicks} unique), rate: ${clickRate}%`);
+
+                  const res = await prisma.mauticEmail.updateMany({
+                    where: {
+                      clientId: client.id,
+                      mauticEmailId: String(emailId)
+                    },
+                    data: {
+                      clickedCount: clickData.clickedCount,
+                      uniqueClicks: clickData.uniqueClicks,
+                      clickRate: clickRate
+                    }
+                  });
+
+                  if (res && res.count) {
+                    updatedCount += res.count;
+                    if (res.count === 0) {
+                      console.warn(`         ⚠️  Update returned 0 rows - email may not exist in DB`);
+                    }
                   }
-                });
-
-                if (res && res.count) updatedCount += res.count;
-              } catch (e) {
-                console.warn(`Failed to update click counts for email ${emailId}:`, e.message || e);
+                } catch (e) {
+                  console.error(`      ❌ Failed to update click counts for email ${emailId}:`, e.message || e);
+                  skippedCount++;
+                }
+              } else {
+                // No click data for this email
+                skippedCount++;
               }
             }
+            
+            console.log(`\n   ✅ Email update complete:`);
+            console.log(`      Total emails: ${emails.length}`);
+            console.log(`      Updated with clicks: ${updatedCount}`);
+            console.log(`      Skipped (no clicks): ${skippedCount}`);
           }
-          console.log(`✅ Updated ${updatedCount} email records with click counts (total + unique)`);
+        } else {
+          console.log(`\n   ℹ️  No emails to process for click trackables`);
         }
       } catch (e) {
-        console.warn('Failed to fetch/save click trackables (non-fatal):', e.message || e);
+        console.error(`\n❌ Failed to fetch/save click trackables:`, e.message || e);
+        console.error(`   Stack:`, e.stack);
       }
 
       // ✅ Persist SMS campaigns to DB - With smart categorization
@@ -1609,30 +1741,32 @@ class MauticAPIService {
   }
 
   /**
-   * Fetch mobile numbers for multiple leads with concurrency control
+   * Fetch mobile numbers for multiple leads - SEQUENTIAL processing
    * @param {Object} client - Client configuration
    * @param {Array<number>} leadIds - Array of lead IDs
-   * @param {number} concurrency - Max concurrent requests (default: 5)
    * @returns {Promise<Map>} Map of leadId -> mobile number
    */
-  async fetchMobileNumbers(client, leadIds, concurrency = 5) {
+  async fetchMobileNumbers(client, leadIds) {
     try {
-      const limiter = pLimit(concurrency);
       const uniqueLeadIds = [...new Set(leadIds)];
 
-      logger.info(`Fetching mobile numbers for ${uniqueLeadIds.length} unique leads...`);
+      logger.info(`Fetching mobile numbers for ${uniqueLeadIds.length} unique leads (sequential)...`);
 
-      const tasks = uniqueLeadIds.map(leadId =>
-        limiter(async () => {
-          const contact = await this.fetchContactDetails(client, leadId);
-          return { leadId, mobile: contact.mobile };
-        })
-      );
+      const mobileMap = new Map();
+      
+      for (let i = 0; i < uniqueLeadIds.length; i++) {
+        const leadId = uniqueLeadIds[i];
+        const contact = await this.fetchContactDetails(client, leadId);
+        mobileMap.set(leadId, contact.mobile);
+        
+        // Log progress every 50 leads
+        if ((i + 1) % 50 === 0 || i + 1 === uniqueLeadIds.length) {
+          logger.info(`   Processed ${i + 1}/${uniqueLeadIds.length} leads...`);
+        }
+      }
 
-      const results = await Promise.all(tasks);
-      const mobileMap = new Map(results.map(r => [r.leadId, r.mobile]));
-
-      logger.info(`✅ Fetched ${results.filter(r => r.mobile).length} mobile numbers`);
+      const withMobile = Array.from(mobileMap.values()).filter(m => m).length;
+      logger.info(`✅ Fetched ${withMobile} mobile numbers (sequential)`);
       return mobileMap;
     } catch (error) {
       logger.error(`Failed to fetch mobile numbers:`, error.message);
