@@ -40,13 +40,17 @@ function validateEnvironment() {
     console.warn('⚠️  WARNING: JWT_SECRET should be at least 32 characters long for security.');
   }
 
-  // Validate ENCRYPTION_KEY length
-  if (process.env.ENCRYPTION_KEY.length < 32) {
-    logger.warn('ENCRYPTION_KEY is too short', { 
+  // Validate ENCRYPTION_KEY format (must be exactly 64 hex characters)
+  if (process.env.ENCRYPTION_KEY.length !== 64 || !/^[0-9a-f]{64}$/i.test(process.env.ENCRYPTION_KEY)) {
+    logger.error('ENCRYPTION_KEY has invalid format', { 
       length: process.env.ENCRYPTION_KEY.length,
-      recommended: 64
+      expected: '64 hexadecimal characters'
     });
-    console.warn('⚠️  WARNING: ENCRYPTION_KEY should be at least 32 characters long for security.');
+    console.error('\n❌ FATAL: Invalid ENCRYPTION_KEY format!');
+    console.error(`   Expected: 64 hexadecimal characters (0-9, a-f)`);
+    console.error(`   Received: ${process.env.ENCRYPTION_KEY.length} characters`);
+    console.error('   Generate a valid key with: openssl rand -hex 32\n');
+    process.exit(1);
   }
 
   logger.info('Environment validation passed');
