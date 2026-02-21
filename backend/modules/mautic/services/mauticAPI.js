@@ -455,23 +455,95 @@ class MauticAPIService {
 
           console.log(`   📧 [${index + 1}/${emails.length}] Fetching click data for email ID: ${emailId} (${emailName.substring(0, 50)})`);
 
-          const resp = await apiClient.get('/stats/channel_url_trackables', {
-            params: {
-              'where[0][col]': 'channel_id',
-              'where[0][expr]': 'eq',
-              'where[0][val]': emailId,
-              limit: 10000
-            }
-          });
+          // Fetch with pagination to handle 403 responses that limit to 100 records
+          let allRawRows = [];
+          let currentStart = 0;
+          const pageSize = 10000; // Request large page size
+          let hasMore = true;
+          let pageNum = 0;
 
-          const rawRows = resp.data?.stats || resp.data || [];
-          console.log(`      ✅ Received ${rawRows.length} click trackable records from API`);
-          
-          if (rawRows.length > 0) {
-            console.log(`      📊 Sample: redirectId=${rawRows[0].redirect_id}, hits=${rawRows[0].hits}, uniqueHits=${rawRows[0].unique_hits}`);
+          while (hasMore) {
+            pageNum++;
+            
+            try {
+              const resp = await apiClient.get('/stats/channel_url_trackables', {
+                params: {
+                  'where[0][col]': 'channel_id',
+                  'where[0][expr]': 'eq',
+                  'where[0][val]': emailId,
+                  limit: pageSize,
+                  start: currentStart
+                }
+              });
+
+              const pageRows = resp.data?.stats || resp.data || [];
+              
+              if (pageNum === 1) {
+                console.log(`      ✅ Received ${pageRows.length} click trackable records from API`);
+              } else {
+                console.log(`      ✅ Page ${pageNum}: Received ${pageRows.length} more records`);
+              }
+              
+              if (pageRows.length > 0) {
+                allRawRows.push(...pageRows);
+                
+                if (pageNum === 1 && pageRows.length > 0) {
+                  console.log(`      📊 Sample: redirectId=${pageRows[0].redirect_id}, hits=${pageRows[0].hits}, uniqueHits=${pageRows[0].unique_hits}`);
+                }
+                
+                // If we got fewer records than requested, we've reached the end
+                if (pageRows.length < pageSize) {
+                  hasMore = false;
+                } else {
+                  currentStart += pageRows.length;
+                }
+              } else {
+                hasMore = false;
+              }
+            } catch (pageError) {
+              // Handle 403 or other errors with pagination
+              if (pageError.response && pageError.response.data) {
+                const errorData = pageError.response.data;
+                const pageRows = errorData.stats || (Array.isArray(errorData) ? errorData : []);
+                
+                if (Array.isArray(pageRows) && pageRows.length > 0) {
+                  if (pageNum === 1) {
+                    console.log(`      ⚠️  Got ${pageError.response.status} error but received ${pageRows.length} records`);
+                    console.log(`      📊 Processing data despite error status`);
+                    console.log(`      📊 Sample: redirectId=${pageRows[0].redirect_id}, hits=${pageRows[0].hits}, uniqueHits=${pageRows[0].unique_hits}`);
+                  } else {
+                    console.log(`      ⚠️  Page ${pageNum}: Got ${pageError.response.status} error but received ${pageRows.length} more records`);
+                  }
+                  
+                  allRawRows.push(...pageRows);
+                  
+                  // Check if we got a full page (likely more data available)
+                  if (pageRows.length >= 100) {
+                    // 403 responses seem to default to 100 records, try next page
+                    currentStart += pageRows.length;
+                    console.log(`      🔄 Fetching next page (got full page of ${pageRows.length}, might be more)...`);
+                  } else {
+                    // Got less than 100, probably the last page
+                    hasMore = false;
+                  }
+                } else {
+                  // No data in error response
+                  console.error(`      ❌ Error with no data: ${pageError.message}`);
+                  hasMore = false;
+                }
+              } else {
+                // Error without response data
+                console.error(`      ❌ Error: ${pageError.message}`);
+                hasMore = false;
+              }
+            }
           }
 
-          const mapped = rawRows.map((r, rIndex) => {
+          if (allRawRows.length > 100) {
+            console.log(`      ✅ Total fetched: ${allRawRows.length} records across ${pageNum} page(s)`);
+          }
+
+          const mapped = allRawRows.map((r, rIndex) => {
             const record = {
               redirect_id: r.redirect_id || r.id || r.redirectId || '',
               hits: parseInt(r.hits || r.hits_count || 0, 10) || 0,
@@ -490,48 +562,8 @@ class MauticAPIService {
 
           clickRows.push(...mapped);
         } catch (e) {
-          // Check if error response contains data (403 with data scenario)
-          if (e.response && e.response.data) {
-            const errorData = e.response.data;
-            const rawRows = errorData.stats || (Array.isArray(errorData) ? errorData : []);
-            
-            // If we got data despite the error, use it
-            if (Array.isArray(rawRows) && rawRows.length > 0) {
-              const emailId = email.id || email.mauticEmailId || email.e_id;
-              console.log(`   ⚠️  [${index + 1}/${emails.length}] Got ${e.response.status} error but received ${rawRows.length} records for email ${emailId}`);
-              console.log(`      📊 Processing data despite error status`);
-              
-              if (rawRows.length > 0) {
-                console.log(`      📊 Sample: redirectId=${rawRows[0].redirect_id}, hits=${rawRows[0].hits}, uniqueHits=${rawRows[0].unique_hits}`);
-              }
-              
-              const mapped = rawRows.map((r, rIndex) => {
-                const record = {
-                  redirect_id: r.redirect_id || r.id || r.redirectId || '',
-                  hits: parseInt(r.hits || r.hits_count || 0, 10) || 0,
-                  unique_hits: parseInt(r.unique_hits || r.unique_hits_count || r.uniqueHits || 0, 10) || 0,
-                  channel_id: parseInt(emailId, 10) || 0,
-                  url: r.url || r.path || null
-                };
-                
-                // Log invalid records
-                if (!record.redirect_id || !record.channel_id) {
-                  console.log(`      ⚠️  Invalid record [${rIndex}]: redirectId=${record.redirect_id}, channelId=${record.channel_id}`);
-                }
-                
-                return record;
-              });
-              
-              clickRows.push(...mapped);
-              continue; // Successfully processed despite error, move to next email
-            }
-          }
-          
-          // If no data in error response, log the error
-          console.error(`   ❌ [${index + 1}/${emails.length}] Failed to fetch click stats for email ${email.id}:`, e.message || e);
-          if (e.response) {
-            console.error(`      HTTP Status: ${e.response.status}, Data:`, e.response.data);
-          }
+          // This catch is for unexpected errors outside the pagination logic
+          console.error(`   ❌ [${index + 1}/${emails.length}] Unexpected error for email ${email.id}:`, e.message || e);
         }
       }
 
