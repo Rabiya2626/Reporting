@@ -189,12 +189,17 @@ export default function AddClientModal({ isOpen, onClose, onSuccess, editClient 
             name: formData.name,
             mauticUrl: formData.mauticUrl,
             username: formData.username,
-            password: formData.password,
             reportId: formData.reportId,
             assignToManager: formData.assignToManager || null,
             assignToEmployees: formData.assignToEmployees || [],
             page: formData.page || undefined
         };
+
+        // Only include password when creating a new client (not editing)
+        // When editing, password field is hidden and shouldn't be sent
+        if (!editClient) {
+            submitData.password = formData.password;
+        }
 
         // Only include custom backfill params when user explicitly enables it
         if (customBackfill) {
