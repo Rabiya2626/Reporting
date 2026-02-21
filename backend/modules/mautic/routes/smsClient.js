@@ -279,7 +279,10 @@ router.put('/sms-clients/:id', async (req, res) => {
         });
       }
 
-      updateData.password = encryptionService.encrypt(password);
+      // Only encrypt and update password if a non-empty password is provided
+      if (password.trim()) {
+        updateData.password = encryptionService.encrypt(password);
+      }
     }
 
     const smsClient = await prisma.smsClient.update({

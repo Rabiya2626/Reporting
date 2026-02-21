@@ -712,7 +712,8 @@ router.put("/clients/:id", async (req, res) => {
     if (name) updateData.name = name;
     if (mauticUrl) updateData.mauticUrl = mauticUrl;
     if (username) updateData.username = username;
-    if (password) updateData.password = encryptionService.encrypt(password);
+    // Only encrypt and update password if a non-empty password is provided
+    if (password && password.trim()) updateData.password = encryptionService.encrypt(password);
     if (typeof isActive === "boolean") updateData.isActive = isActive;
 
     const client = await prisma.mauticClient.update({
@@ -1581,39 +1582,61 @@ router.get("/sync/progress", async (req, res) => {
  * GET /api/mautic/sync/status
  * Get current sync status
  */
+// Cache for sync status to reduce DB queries
+let syncStatusCache = {
+  lastSyncAt: null,
+  activeClientsCount: 0,
+  lastUpdated: 0
+};
+const SYNC_STATUS_CACHE_TTL = 5000; // 5 seconds
+
 router.get("/sync/status", async (req, res) => {
   const elapsedSeconds = isSyncInProgress
     ? Math.floor((Date.now() - currentSyncStartTime) / 1000)
     : 0;
 
-  // Get last successful sync from database
-  let lastSyncAt = null;
-  let activeClientsCount = 0;
-  try {
-    const lastSync = await prisma.syncLog.findFirst({
-      where: {
-        source: 'mautic',
-        status: 'success'
-      },
-      orderBy: { syncCompletedAt: 'desc' }
-    });
-    lastSyncAt = lastSync?.syncCompletedAt || null;
+  // Use cached values if available and fresh (unless sync is in progress)
+  const now = Date.now();
+  const cacheValid = (now - syncStatusCache.lastUpdated) < SYNC_STATUS_CACHE_TTL;
+  
+  let lastSyncAt = syncStatusCache.lastSyncAt;
+  let activeClientsCount = syncStatusCache.activeClientsCount;
 
-    // If no sync log, check MauticClient lastSyncAt as fallback
-    if (!lastSyncAt) {
-      const client = await prisma.mauticClient.findFirst({
-        where: { lastSyncAt: { not: null } },
-        orderBy: { lastSyncAt: 'desc' }
+  // Only query DB if cache is stale or sync just completed
+  if (!cacheValid || (!isSyncInProgress && syncStatusCache.lastSyncAt === null)) {
+    try {
+      const lastSync = await prisma.syncLog.findFirst({
+        where: {
+          source: 'mautic',
+          status: 'success'
+        },
+        orderBy: { syncCompletedAt: 'desc' }
       });
-      lastSyncAt = client?.lastSyncAt || null;
-    }
+      lastSyncAt = lastSync?.syncCompletedAt || null;
 
-    // Count active Mautic clients for hasCredentials flag
-    activeClientsCount = await prisma.mauticClient.count({
-      where: { isActive: true }
-    });
-  } catch (error) {
-    logger.error("Error fetching last sync time:", error);
+      // If no sync log, check MauticClient lastSyncAt as fallback
+      if (!lastSyncAt) {
+        const client = await prisma.mauticClient.findFirst({
+          where: { lastSyncAt: { not: null } },
+          orderBy: { lastSyncAt: 'desc' }
+        });
+        lastSyncAt = client?.lastSyncAt || null;
+      }
+
+      // Count active Mautic clients for hasCredentials flag
+      activeClientsCount = await prisma.mauticClient.count({
+        where: { isActive: true }
+      });
+
+      // Update cache
+      syncStatusCache = {
+        lastSyncAt,
+        activeClientsCount,
+        lastUpdated: now
+      };
+    } catch (error) {
+      logger.error("Error fetching last sync time:", error);
+    }
   }
 
   const hasCredentials = activeClientsCount > 0;
@@ -1626,8 +1649,8 @@ router.get("/sync/status", async (req, res) => {
       startTime: currentSyncStartTime,
       syncType: currentSyncType,
       lastSyncAt: lastSyncAt,
-      lastUpdated: lastSyncAt, // Alias for frontend compatibility
-      lastSync: lastSyncAt, // Additional alias
+      lastUpdated: lastSyncAt,
+      lastSync: lastSyncAt,
       hasCredentials: hasCredentials,
       activeClientsCount: activeClientsCount,
     },
@@ -1753,6 +1776,8 @@ router.post("/sync/all", async (req, res) => {
         isSyncInProgress = false;
         currentSyncStartTime = null;
         currentSyncType = null;
+        // Invalidate cache so next status check gets fresh data
+        syncStatusCache.lastUpdated = 0;
       });
   } catch (error) {
     logger.error("Error syncing all clients:", error);
@@ -1761,6 +1786,8 @@ router.post("/sync/all", async (req, res) => {
     isSyncInProgress = false;
     currentSyncStartTime = null;
     currentSyncType = null;
+    // Invalidate cache
+    syncStatusCache.lastUpdated = 0;
 
     res.status(500).json({
       success: false,
@@ -1916,6 +1943,8 @@ router.post("/sync/:clientId", async (req, res) => {
         isSyncInProgress = false;
         currentSyncStartTime = null;
         currentSyncType = null;
+        // Invalidate cache so next status check gets fresh data
+        syncStatusCache.lastUpdated = 0;
       });
   } catch (error) {
     logger.error("Error syncing client:", error);
@@ -1924,6 +1953,8 @@ router.post("/sync/:clientId", async (req, res) => {
     isSyncInProgress = false;
     currentSyncStartTime = null;
     currentSyncType = null;
+    // Invalidate cache
+    syncStatusCache.lastUpdated = 0;
 
     res.status(500).json({
       success: false,
