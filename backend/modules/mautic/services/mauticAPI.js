@@ -490,6 +490,44 @@ class MauticAPIService {
 
           clickRows.push(...mapped);
         } catch (e) {
+          // Check if error response contains data (403 with data scenario)
+          if (e.response && e.response.data) {
+            const errorData = e.response.data;
+            const rawRows = errorData.stats || (Array.isArray(errorData) ? errorData : []);
+            
+            // If we got data despite the error, use it
+            if (Array.isArray(rawRows) && rawRows.length > 0) {
+              const emailId = email.id || email.mauticEmailId || email.e_id;
+              console.log(`   ⚠️  [${index + 1}/${emails.length}] Got ${e.response.status} error but received ${rawRows.length} records for email ${emailId}`);
+              console.log(`      📊 Processing data despite error status`);
+              
+              if (rawRows.length > 0) {
+                console.log(`      📊 Sample: redirectId=${rawRows[0].redirect_id}, hits=${rawRows[0].hits}, uniqueHits=${rawRows[0].unique_hits}`);
+              }
+              
+              const mapped = rawRows.map((r, rIndex) => {
+                const record = {
+                  redirect_id: r.redirect_id || r.id || r.redirectId || '',
+                  hits: parseInt(r.hits || r.hits_count || 0, 10) || 0,
+                  unique_hits: parseInt(r.unique_hits || r.unique_hits_count || r.uniqueHits || 0, 10) || 0,
+                  channel_id: parseInt(emailId, 10) || 0,
+                  url: r.url || r.path || null
+                };
+                
+                // Log invalid records
+                if (!record.redirect_id || !record.channel_id) {
+                  console.log(`      ⚠️  Invalid record [${rIndex}]: redirectId=${record.redirect_id}, channelId=${record.channel_id}`);
+                }
+                
+                return record;
+              });
+              
+              clickRows.push(...mapped);
+              continue; // Successfully processed despite error, move to next email
+            }
+          }
+          
+          // If no data in error response, log the error
           console.error(`   ❌ [${index + 1}/${emails.length}] Failed to fetch click stats for email ${email.id}:`, e.message || e);
           if (e.response) {
             console.error(`      HTTP Status: ${e.response.status}, Data:`, e.response.data);
