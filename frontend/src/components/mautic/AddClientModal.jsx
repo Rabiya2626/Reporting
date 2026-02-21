@@ -89,34 +89,19 @@ export default function AddClientModal({ isOpen, onClose, onSuccess, editClient 
     }, [formData.assignToManager, employees]);
 
     useEffect(() => {
-        const fetchPasswordForEdit = async () => {
+        if (isOpen) {
             if (editClient) {
-                try {
-                    const response = await axios.get(`/api/mautic/clients/${editClient.id}/password`);
-                    if (response.data.success) {
-                        const pwd = response.data.data.password;
-                        setFormData({
-                            name: editClient.name,
-                            mauticUrl: editClient.mauticUrl,
-                            username: editClient.username,
-                            password: pwd,
-                            reportId: editClient.reportId?.toString() || '4',
-                            assignToManager: '',
-                            assignToEmployees: []
-                        });
-                    }
-                } catch (error) {
-                    console.error('Error fetching password:', error);
-                    setFormData({
-                        name: editClient.name,
-                        mauticUrl: editClient.mauticUrl,
-                        username: editClient.username,
-                        password: '',
-                        reportId: editClient.reportId?.toString() || '4',
-                        assignToManager: '',
-                        assignToEmployees: []
-                    });
-                }
+                // When editing, don't fetch the password - leave it blank
+                // User can enter a new password if they want to update it
+                setFormData({
+                    name: editClient.name,
+                    mauticUrl: editClient.mauticUrl,
+                    username: editClient.username,
+                    password: '', // Leave blank - user can enter new password to update
+                    reportId: editClient.reportId?.toString() || '4',
+                    assignToManager: '',
+                    assignToEmployees: []
+                });
             } else {
                 setFormData({
                     name: '',
@@ -130,10 +115,6 @@ export default function AddClientModal({ isOpen, onClose, onSuccess, editClient 
             }
             setErrors({});
             setTestResult(null);
-        };
-
-        if (isOpen) {
-            fetchPasswordForEdit();
         }
     }, [editClient, isOpen]);
 
@@ -195,9 +176,12 @@ export default function AddClientModal({ isOpen, onClose, onSuccess, editClient 
             page: formData.page || undefined
         };
 
-        // Only include password when creating a new client (not editing)
-        // When editing, password field is hidden and shouldn't be sent
+        // Include password when creating OR when editing with a non-empty password
         if (!editClient) {
+            // Creating new client - password is required
+            submitData.password = formData.password;
+        } else if (formData.password && formData.password.trim()) {
+            // Editing client - only include password if user entered a new one
             submitData.password = formData.password;
         }
 
@@ -328,41 +312,45 @@ export default function AddClientModal({ isOpen, onClose, onSuccess, editClient 
                     </div>
 
                     {/* Password */}
-                    {!editClient && (
-                        <div>
-                            <label className="block text-sm font-medium text-gray-700 mb-1">
-                                Password *
-                            </label>
-                            <div className="relative">
-                                <input
-                                    type={showPassword ? 'text' : 'password'}
-                                    name="password"
-                                    value={formData.password}
-                                    onChange={handleChange}
-                                    className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-shadow ${errors.password ? 'border-red-500' : 'border-gray-300'}`}
-                                    placeholder="••••••••"
-                                    aria-describedby="password-error"
-                                />
-                                <button
-                                    type="button"
-                                    className="absolute inset-y-0 right-0 pr-3 flex items-center focus:outline-none"
-                                    onClick={togglePasswordVisibility}
-                                    aria-label="Toggle password visibility"
-                                >
-                                    {showPassword ? (
-                                        <EyeOff className="h-5 w-5 text-gray-400" />
-                                    ) : (
-                                        <Eye className="h-5 w-5 text-gray-400" />
-                                    )}
-                                </button>
-                            </div>
-                            {errors.password && (
-                                <p id="password-error" className="mt-1 text-xs text-red-600">
-                                    {errors.password}
-                                </p>
-                            )}
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                            Password {editClient ? '' : '*'}
+                        </label>
+                        <div className="relative">
+                            <input
+                                type={showPassword ? 'text' : 'password'}
+                                name="password"
+                                value={formData.password}
+                                onChange={handleChange}
+                                className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-shadow ${errors.password ? 'border-red-500' : 'border-gray-300'}`}
+                                placeholder={editClient ? "Leave blank to keep existing password" : "••••••••"}
+                                aria-describedby="password-error"
+                                required={!editClient}
+                            />
+                            <button
+                                type="button"
+                                className="absolute inset-y-0 right-0 pr-3 flex items-center focus:outline-none"
+                                onClick={togglePasswordVisibility}
+                                aria-label="Toggle password visibility"
+                            >
+                                {showPassword ? (
+                                    <EyeOff className="h-5 w-5 text-gray-400" />
+                                ) : (
+                                    <Eye className="h-5 w-5 text-gray-400" />
+                                )}
+                            </button>
                         </div>
-                    )}
+                        {errors.password && (
+                            <p id="password-error" className="mt-1 text-xs text-red-600">
+                                {errors.password}
+                            </p>
+                        )}
+                        {editClient && (
+                            <p className="mt-1 text-xs text-gray-500">
+                                Leave blank to keep existing password, or enter a new password to update it
+                            </p>
+                        )}
+                    </div>
 
                     {/* Report ID - Show in both create and edit modes */}
                     <div>

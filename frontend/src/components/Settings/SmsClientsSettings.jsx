@@ -84,7 +84,7 @@ const SmsClientsSettings = () => {
       name: client.name,
       mauticUrl: client.mauticUrl,
       username: client.username,
-      password: '' // Don't populate password for security
+      password: '' // Leave blank - user can enter new password to update
     });
     setIsModalOpen(true);
   };
