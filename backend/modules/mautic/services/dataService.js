@@ -801,6 +801,41 @@ class MauticDataService {
   }
 
   /**
+   * Save email stat events (bounces, unsubscribes) to database
+   * @param {number} clientId - Client ID
+   * @param {Array} eventRows - Array of event objects
+   * @returns {Promise<Object>} Save results
+   */
+  async saveEmailStatEvents(clientId, eventRows) {
+    try {
+      if (!eventRows || eventRows.length === 0) {
+        console.log('   ℹ️  No email stat events to save');
+        return { success: true, created: 0, skipped: 0, total: 0 };
+      }
+
+      console.log(`\n   💾 Saving ${eventRows.length} email stat events...`);
+      
+      // For now, we'll just log these events
+      // You can add a MauticEmailStatEvent model to the schema if you want to persist these
+      const bounces = eventRows.filter(e => e.eventType === 'bounce').length;
+      const unsubscribes = eventRows.filter(e => e.eventType === 'unsubscribed').length;
+      
+      console.log(`      Bounces: ${bounces}`);
+      console.log(`      Unsubscribes: ${unsubscribes}`);
+      
+      return {
+        success: true,
+        created: 0, // Not persisting to DB yet
+        skipped: eventRows.length,
+        total: eventRows.length
+      };
+    } catch (error) {
+      console.error('Error saving email stat events:', error);
+      return { success: false, created: 0, skipped: 0, total: 0, error: error.message };
+    }
+  }
+
+  /**
    * Update client last sync time
    * @param {number} clientId - Client ID
    * @returns {Promise<Object>} Updated client

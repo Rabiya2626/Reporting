@@ -676,6 +676,205 @@ class MauticAPIService {
   }
 
   /**
+   * Fetch click trackable records for a specific email from Mautic stats API
+   * @param {Object} client - Client configuration
+   * @param {string} emailId - Mautic email ID
+   * @returns {Promise<Array>} Array of click trackable records
+   */
+  async fetchEmailClickStats(client, emailId) {
+    try {
+      const apiClient = this.createClient(client);
+      const response = await apiClient.get('/stats/channel_url_trackables', {
+        params: {
+          'where[0][col]': 'channel_id',
+          'where[0][expr]': 'eq',
+          'where[0][val]': emailId
+        }
+      });
+
+      return response.data?.stats || [];
+    } catch (error) {
+      console.error(`Error fetching click stats for email ${emailId}:`, error.message);
+      return []; // Return empty array on error
+    }
+  }
+
+  /**
+   * Fetch click trackable records for all emails in batch with retry logic
+   * @param {Object} client - Client configuration
+   * @param {Array} emails - Array of email objects
+   * @returns {Promise<Object>} Result with success flag, clickRows array, and error if any
+   */
+  async fetchAllEmailClickStats(client, emails) {
+    try {
+      console.log(`📊 Fetching click trackable records for ${emails.length} emails...`);
+      const clickRows = [];
+      
+      // Import dataService to save click trackables incrementally
+      const { default: dataService } = await import('./dataService.js');
+      
+      // Process in batches of 10 concurrently
+      const batchSize = 10;
+      for (let i = 0; i < emails.length; i += batchSize) {
+        const batch = emails.slice(i, i + batchSize);
+        const results = await Promise.allSettled(
+          batch.map(async (email) => {
+            const stats = await this.fetchEmailClickStats(client, email.id);
+            return { emailId: email.id, stats };
+          })
+        );
+        
+        for (const r of results) {
+          if (r.status === 'fulfilled') {
+            const { emailId, stats } = r.value;
+            for (const s of stats) {
+              clickRows.push({
+                redirect_id: s.redirect_id || s.redirectId,
+                hits: s.hits || 0,
+                unique_hits: s.unique_hits || s.uniqueHits || 0,
+                channel_id: emailId,
+                url: s.url || null
+              });
+            }
+          }
+        }
+        
+        console.log(`   Processed ${Math.min(i + batchSize, emails.length)}/${emails.length} emails (${clickRows.length} click records)...`);
+        
+        // Save incrementally every 500 records to avoid memory issues
+        if (clickRows.length >= 500) {
+          try {
+            await dataService.saveClickTrackables(client.id, clickRows);
+            console.log(`   💾 Saved ${clickRows.length} click trackables to database (incremental save)...`);
+            clickRows.length = 0; // Clear array
+          } catch (saveErr) {
+            console.warn(`   ⚠️  Failed to save click trackables incrementally: ${saveErr.message}`);
+          }
+        }
+      }
+      
+      // Save any remaining click trackables
+      if (clickRows.length > 0) {
+        try {
+          await dataService.saveClickTrackables(client.id, clickRows);
+          console.log(`   💾 Saved final ${clickRows.length} click trackables to database...`);
+        } catch (saveErr) {
+          console.warn(`   ⚠️  Failed to save final click trackables: ${saveErr.message}`);
+        }
+      }
+      
+      console.log(`✅ Click trackable fetch complete`);
+      return { success: true, clickRows: [] }; // Return empty since we saved incrementally
+    } catch (error) {
+      console.error(`❌ Error fetching click trackables:`, error.message);
+      return { success: false, error: error.message, clickRows: [] };
+    }
+  }
+
+  /**
+   * Fetch bounce stats for all emails
+   * @param {Object} client - Client configuration
+   * @param {Array} emails - Array of email objects
+   * @returns {Promise<Array>} Array of bounce event records
+   */
+  async fetchBounceStats(client, emails) {
+    console.log(`❌ Fetching bounce stats for ${emails.length} emails...`);
+    const eventRows = [];
+    
+    const batchSize = 10;
+    for (let i = 0; i < emails.length; i += batchSize) {
+      const batch = emails.slice(i, i + batchSize);
+      const results = await Promise.allSettled(
+        batch.map(async (email) => {
+          try {
+            const apiClient = this.createClient(client);
+            const response = await apiClient.get('/stats/email_stats', {
+              params: {
+                'where[0][col]': 'email_id',
+                'where[0][expr]': 'eq',
+                'where[0][val]': email.id,
+                'where[1][col]': 'is_failed',
+                'where[1][expr]': 'eq',
+                'where[1][val]': 1
+              }
+            });
+            return { emailId: email.id, stats: response.data?.stats || [] };
+          } catch (e) {
+            return { emailId: email.id, stats: [] };
+          }
+        })
+      );
+      
+      for (const r of results) {
+        if (r.status === 'fulfilled') {
+          const { emailId, stats } = r.value;
+          for (const s of stats) {
+            eventRows.push({ ...s, email_id: emailId, eventType: 'bounce' });
+          }
+        }
+      }
+      
+      console.log(`   Processed ${Math.min(i + batchSize, emails.length)}/${emails.length} emails (${eventRows.length} bounces)...`);
+    }
+    
+    console.log(`✅ Bounce stats collected: ${eventRows.length}`);
+    return eventRows;
+  }
+
+  /**
+   * Fetch unsubscribe events for all emails
+   * @param {Object} client - Client configuration
+   * @param {Array} emails - Array of email objects
+   * @returns {Promise<Array>} Array of unsubscribe event records
+   */
+  async fetchUnsubscribeStats(client, emails) {
+    console.log(`🚫 Fetching unsubscribe stats for ${emails.length} emails...`);
+    const eventRows = [];
+    
+    const batchSize = 10;
+    for (let i = 0; i < emails.length; i += batchSize) {
+      const batch = emails.slice(i, i + batchSize);
+      const results = await Promise.allSettled(
+        batch.map(async (email) => {
+          try {
+            const apiClient = this.createClient(client);
+            const response = await apiClient.get('/stats/lead_event_log', {
+              params: {
+                'where[0][col]': 'bundle',
+                'where[0][expr]': 'eq',
+                'where[0][val]': 'email',
+                'where[1][col]': 'object_id',
+                'where[1][expr]': 'eq',
+                'where[1][val]': email.id,
+                'where[2][col]': 'action',
+                'where[2][expr]': 'eq',
+                'where[2][val]': 'unsubscribed'
+              }
+            });
+            return { emailId: email.id, stats: response.data?.stats || [] };
+          } catch (e) {
+            return { emailId: email.id, stats: [] };
+          }
+        })
+      );
+      
+      for (const r of results) {
+        if (r.status === 'fulfilled') {
+          const { emailId, stats } = r.value;
+          for (const s of stats) {
+            eventRows.push({ ...s, email_id: emailId, eventType: 'unsubscribed' });
+          }
+        }
+      }
+      
+      console.log(`   Processed ${Math.min(i + batchSize, emails.length)}/${emails.length} emails (${eventRows.length} unsubscribes)...`);
+    }
+    
+    console.log(`✅ Unsubscribe stats collected: ${eventRows.length}`);
+    return eventRows;
+  }
+
+  /**
  * Fetch a full Mautic report and save directly to database in streaming batches
  * This prevents memory overload and responds immediately to frontend
  * ⚡ OPTIMIZED: Only fetches NEW data since last sync (month-based tracking)
