@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 
-// Get encryption key from environment
-let ENCRYPTION_KEY = process.env.ENCRYPTION_KEY;
+// Get encryption key from environment and trim whitespace
+let ENCRYPTION_KEY = process.env.ENCRYPTION_KEY ? process.env.ENCRYPTION_KEY.trim() : null;
 
 // Validate that encryption key is properly set
 if (!ENCRYPTION_KEY || ENCRYPTION_KEY === 'your_64_character_encryption_key_here_generate_with_openssl_rand_hex_32') {
@@ -18,11 +18,14 @@ if (!ENCRYPTION_KEY || ENCRYPTION_KEY === 'your_64_character_encryption_key_here
   console.warn('⚠️  Add this to your .env file: ENCRYPTION_KEY=' + ENCRYPTION_KEY);
 }
 
-// Validate key format (must be 64 hex characters = 32 bytes)
-if (ENCRYPTION_KEY.length !== 64 || !/^[0-9a-f]{64}$/i.test(ENCRYPTION_KEY)) {
+// Validate key format (must be at least 64 hex characters = 32 bytes)
+// We'll use slice(0, 64) to handle any extra characters
+const trimmedKey = ENCRYPTION_KEY.slice(0, 64);
+if (trimmedKey.length !== 64 || !/^[0-9a-f]{64}$/i.test(trimmedKey)) {
   console.error(`❌ Invalid ENCRYPTION_KEY format!`);
   console.error(`   Expected: 64 hexadecimal characters (0-9, a-f)`);
-  console.error(`   Received: ${ENCRYPTION_KEY.length} characters`);
+  console.error(`   Received: ${trimmedKey.length} characters from ENCRYPTION_KEY`);
+  console.error(`   Full key length: ${ENCRYPTION_KEY.length} characters`);
   console.error('   Generate proper key with: openssl rand -hex 32');
   throw new Error('Invalid ENCRYPTION_KEY format. Must be 64 hex characters.');
 }
@@ -39,8 +42,8 @@ class EncryptionService {
     if (!text) return '';
     
     try {
-      // Convert 64-char hex string to 32-byte buffer
-      const key = Buffer.from(ENCRYPTION_KEY, 'hex');
+      // Convert 64-char hex string to 32-byte buffer (slice to handle any extra chars)
+      const key = Buffer.from(ENCRYPTION_KEY.slice(0, 64), 'hex');
       
       if (key.length !== 32) {
         throw new Error(`Invalid key length: ${key.length} bytes (expected 32)`);
@@ -69,8 +72,8 @@ class EncryptionService {
     if (!encryptedText) return '';
     
     try {
-      // Convert 64-char hex string to 32-byte buffer
-      const key = Buffer.from(ENCRYPTION_KEY, 'hex');
+      // Convert 64-char hex string to 32-byte buffer (slice to handle any extra chars)
+      const key = Buffer.from(ENCRYPTION_KEY.slice(0, 64), 'hex');
       
       if (key.length !== 32) {
         throw new Error(`Invalid key length: ${key.length} bytes (expected 32)`);
