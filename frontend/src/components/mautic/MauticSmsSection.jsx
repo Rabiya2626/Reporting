@@ -43,17 +43,21 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
                     }
                 }
             );
+            console.log(response.data);
+            
             // Update all state after data is loaded
             setSelectedCampaign(campaign);
             setCurrentPage(page);
             setReplyFilter(filter);
             setMessages(response.data.data || []);
-            setTotalRecords(response.data.total || 0);
+            setTotalRecords(response.data.total || response.data.pagination?.total || 0);
             setTotalPages(Math.ceil((response.data.total || 0) / itemsPerPage));
-            // Store overall stats if provided by API, otherwise use campaign data
-            setOverallDelivered(response.data.delivered || campaign.deliveredCount || 0);
+            
+            // Store campaign-level stats (not page-level)
+            setOverallDelivered(response.data.delivered || 0);
             setOverallFailed(response.data.failed || campaign.failedCount || 0);
             setOverallReplied(response.data.replied || 0);
+            
             setIsSyncing(response.data.syncing || false); // Track syncing status
             setClientSyncing(response.data.syncing || false); // Also set client syncing
             setError(null);
@@ -109,11 +113,14 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
                     }
                 );
                 setMessages(response.data.data || []);
-                setTotalRecords(response.data.total || 0);
+                setTotalRecords(response.data.total || response.data.pagination?.total || 0);
                 setTotalPages(Math.ceil((response.data.total || 0) / newItemsPerPage));
-                setOverallDelivered(response.data.delivered || selectedCampaign.deliveredCount || 0);
+                
+                // Use campaign-level stats (not page-level)
+                setOverallDelivered(response.data.delivered || 0);
                 setOverallFailed(response.data.failed || selectedCampaign.failedCount || 0);
                 setOverallReplied(response.data.replied || 0);
+                
                 setIsSyncing(response.data.syncing || false);
                 setError(null);
             } catch (error) {
@@ -221,31 +228,6 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
         return () => clearInterval(refreshInterval);
     }, [isSyncing, view, selectedCampaign, currentPage, itemsPerPage, replyFilter]);
 
-    // Check client-wide sync status periodically
-    useEffect(() => {
-        if (!selectedClient?.mauticApiId || view !== 'messages') return;
-
-        const checkClientSync = async () => {
-            try {
-                const baseUrl = import.meta.env.VITE_API_URL || '';
-                const response = await axios.get(
-                    `${baseUrl}/api/mautic/sms-clients/${selectedClient.mauticApiId}/sync-status`
-                );
-                setClientSyncing(response.data.syncing || false);
-            } catch (error) {
-                console.error('Failed to check client sync status:', error);
-            }
-        };
-
-        // Check immediately
-        checkClientSync();
-
-        // Then check every 5 seconds
-        const interval = setInterval(checkClientSync, 5000);
-
-        return () => clearInterval(interval);
-    }, [selectedClient?.mauticApiId, view]);
-
     // Calculate metrics
     const totalCampaigns = smsCampaigns.length;
     const totalSent = smsCampaigns.reduce((sum, sms) => sum + (sms.sentCount || 0), 0);
@@ -286,13 +268,15 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
                     </div>
                 )}
 
+
+
                 {/* Metric Cards */}
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
                     <div className="bg-gradient-to-br from-blue-50 to-blue-100 border border-blue-200 rounded-lg p-3">
                         <div className="flex items-center justify-between">
                             <div>
                                 <p className="text-sm font-medium text-blue-600">Total Sent</p>
-                                <p className="text-2xl font-bold text-blue-900">{totalRecords.toLocaleString()}</p>
+                                <p className="text-2xl font-bold text-blue-900">{(totalRecords || 0).toLocaleString()}</p>
                             </div>
                             <TrendingUp className="w-8 h-8 text-blue-500 opacity-50" />
                         </div>
@@ -301,8 +285,8 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
                     <div className="bg-gradient-to-br from-green-50 to-green-100 border border-green-200 rounded-lg p-3">
                         <div className="flex items-center justify-between">
                             <div>
-                                <p className="text-sm font-medium text-green-600">Delivered</p>
-                                <p className="text-2xl font-bold text-green-900">{overallDelivered.toLocaleString()}</p>
+                                <p className="text-sm font-medium text-green-600">Delivered (Campaign)</p>
+                                <p className="text-2xl font-bold text-green-900">{(overallDelivered || 0).toLocaleString()}</p>
                             </div>
                             <CheckCircle className="w-8 h-8 text-green-500 opacity-50" />
                         </div>
@@ -350,7 +334,6 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
                                 >
                                     <option value="all">All Messages</option>
                                     <option value="Stop">Stop</option>
-                                    <option value="Unsubscribe">Unsubscribe</option>
                                     <option value="Other">Other Replies</option>
                                 </select>
                             </div>
@@ -412,10 +395,9 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
                                     <tr>
                                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Lead ID</th>
                                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Mobile Number</th>
-                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Message Text</th>
                                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Reply Text</th>
-                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date Sent</th>
-                                        <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">Status</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Category</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Reply Date</th>
                                         <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">Actions</th>
                                     </tr>
                                 </thead>
@@ -426,52 +408,37 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
                                                 <span className="text-sm font-medium text-gray-900">{msg.leadId}</span>
                                             </td>
                                             <td className="px-4 py-3">
-                                                <span className="text-sm text-gray-900">{msg.mobile || '-'}</span>
-                                            </td>
-                                            <td className="px-4 py-3 max-w-xs">
-                                                <div className="text-sm text-gray-700 truncate" title={msg.messageText}>
-                                                    {msg.messageText ? (
-                                                        msg.messageText.length > 20 
-                                                            ? msg.messageText.substring(0, 20) + '...' 
-                                                            : msg.messageText
-                                                    ) : (
-                                                        <span className="text-gray-400 italic">No message</span>
-                                                    )}
-                                                </div>
+                                                {msg.mobile ? (
+                                                    <span className="text-sm text-gray-900 font-mono">{msg.mobile}</span>
+                                                ) : (
+                                                    <span className="text-gray-400 italic text-sm">-</span>
+                                                )}
                                             </td>
                                             <td className="px-4 py-3 max-w-xs">
                                                 {msg.replyText ? (
-                                                    <div>
-                                                        <div className="text-sm text-gray-700 truncate" title={msg.replyText}>
-                                                            {msg.replyText.length > 10 
-                                                                ? msg.replyText.substring(0, 10) + '...' 
-                                                                : msg.replyText}
-                                                        </div>
-                                                        {/* {msg.replyCategory && (
-                                                            <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium mt-1 ${
-                                                                msg.replyCategory === 'Stop' 
-                                                                    ? 'bg-red-100 text-red-800' 
-                                                                    : msg.replyCategory === 'Unsubscribe'
-                                                                    ? 'bg-orange-100 text-orange-800'
-                                                                    : 'bg-blue-100 text-blue-800'
-                                                            }`}>
-                                                                {msg.replyCategory}
-                                                            </span>
-                                                        )} */}
+                                                    <div className="text-sm text-gray-700 truncate" title={msg.replyText}>
+                                                        {msg.replyText.length > 20 
+                                                            ? msg.replyText.substring(0, 20) + '...' 
+                                                            : msg.replyText}
                                                     </div>
                                                 ) : (
                                                     <span className="text-gray-400 italic text-sm">No reply</span>
                                                 )}
                                             </td>
                                             <td className="px-4 py-3">
-                                                <span className="text-sm text-gray-600">{msg.dateSent ? new Date(msg.dateSent).toLocaleString() : '-'}</span>
-                                            </td>
-                                            <td className="px-4 py-3 text-center">
-                                                <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium ${msg.isFailed === '0' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                                                {msg.replyCategory ? (
+                                                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                                                        msg.replyCategory === 'Stop' ? 'bg-green-100 text-green-800' :
+                                                        'bg-yellow-100 text-yellow-800'
                                                     }`}>
-                                                    {msg.isFailed === '0' ? <CheckCircle className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}
-                                                    {msg.isFailed === '0' ? 'Delivered' : 'Failed'}
-                                                </span>
+                                                        {msg.replyCategory}
+                                                    </span>
+                                                ) : (
+                                                    <span className="text-gray-400 text-sm">-</span>
+                                                )}
+                                            </td>
+                                            <td className="px-4 py-3">
+                                                <span className="text-sm text-gray-600">{msg.repliedAt ? new Date(msg.repliedAt).toLocaleString() : '-'}</span>
                                             </td>
                                             <td className="px-4 py-3 text-center">
                                                 <button

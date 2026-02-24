@@ -1,8 +1,10 @@
 import express from 'express';
+import axios from 'axios';
 import prisma from '../../../prisma/client.js';
 import encryptionService from '../services/encryption.js';
 import mauticAPIService from '../services/mauticAPI.js';
 import smsService from '../services/smsService.js';
+import smsSyncService from '../services/smsSyncService.js';
 import logger from '../../../utils/logger.js';
 
 const router = express.Router();
@@ -201,7 +203,7 @@ router.post('/sms-clients', async (req, res) => {
     // Encrypt password
     const encryptedPassword = encryptionService.encrypt(password);
 
-    // Create SMS client
+    // Create SMS client (FAST - no background jobs)
     const smsClient = await prisma.smsClient.create({
       data: {
         name,
@@ -212,30 +214,20 @@ router.post('/sms-clients', async (req, res) => {
       }
     });
 
-    // ⚡ FAST INITIAL FETCH - Trigger lightweight sync in background
-    // This makes SMS campaigns visible instantly without blocking the response
-    setImmediate(async () => {
-      try {
-        logger.info(`⚡ Starting fast SMS fetch for client ${smsClient.id}...`);
-        const syncResult = await syncSmsClientData(smsClient.id);
-        logger.info(`   ✅ SMS fetch complete: ${syncResult.smsCampaigns || 0} campaigns fetched`);
-      } catch (syncError) {
-        logger.error(`   ❌ SMS fetch failed for client ${smsClient.id}:`, syncError.message);
-      }
-    });
-
-    logger.info(`✅ SMS client created. Data fetch running in background.`);
+    logger.info(`✅ SMS client created successfully.`);
+    logger.info(`   To sync SMS campaigns and stats, use: POST /api/mautic/sms-clients/${smsClient.id}/sync`);
 
     res.status(201).json({
       success: true,
-      message: 'SMS client created successfully. SMS campaigns are being fetched in background.',
+      message: 'SMS client created successfully. Use the sync endpoint to fetch campaigns and stats.',
       data: {
         id: smsClient.id,
         name: smsClient.name,
         mauticUrl: smsClient.mauticUrl,
         username: smsClient.username,
         isActive: smsClient.isActive,
-        createdAt: smsClient.createdAt
+        createdAt: smsClient.createdAt,
+        syncEndpoint: `/api/mautic/sms-clients/${smsClient.id}/sync`
       }
     });
   } catch (error) {
@@ -707,14 +699,17 @@ router.get('/sms-clients/:clientId/sync-status', async (req, res) => {
 
 /**
  * GET /api/mautic/sms-campaigns/:smsId/messages
- * Get SMS messages/stats for a specific SMS campaign with pagination
- * Includes message text, reply data, and filtering by reply category
- * Fetches and stores mobile numbers and messages for leads that don't have them yet
+ * Get SMS stats/replies for a specific SMS campaign with pagination
+ * Sorts by replied first (those with replies on top), then by date
+ * Returns campaign-level totals (not just current page)
  */
 router.get('/sms-campaigns/:smsId/messages', async (req, res) => {
   try {
     const { smsId } = req.params;
-    const { page = 1, limit = 100, replyFilter } = req.query;
+    const { page = 1, limit = 100, replyFilter = 'all' } = req.query;
+
+    console.log("filter", replyFilter);
+    
 
     // Find the SMS campaign in database
     const smsCampaign = await prisma.mauticSms.findFirst({
@@ -724,167 +719,128 @@ router.get('/sms-campaigns/:smsId/messages', async (req, res) => {
     if (!smsCampaign) {
       return res.status(404).json({
         success: false,
-        message: 'SMS campaign not found in database. Please sync the client first.'
+        message: 'SMS campaign not found. Please sync stats first using: POST /sms-clients/:clientId/campaigns/:smsId/sync-stats'
       });
     }
 
-    // Build where clause with optional reply filter
-    const whereClause = { smsId: smsCampaign.id };
+    // Build where clause based on filter
+    // Since replyCategory may be NULL, filter on both category and replyText content
+    let whereClause = { smsId: smsCampaign.id };
     
-    if (replyFilter && replyFilter !== 'all') {
-      whereClause.replyCategory = replyFilter;
+    if (replyFilter !== 'all') {
+      if (replyFilter === 'Stop') {
+        // Show replies with Stop category OR replies containing 'STOP' text
+        whereClause = {
+          smsId: smsCampaign.id,
+          OR: [
+            { replyCategory: 'Stop' },
+            { replyText: { contains: 'STOP' } }
+          ]
+        };
+      } else if (replyFilter === 'Other') {
+        // Show replies with Other category OR replies with text that don't contain 'STOP'
+        whereClause = {
+          smsId: smsCampaign.id,
+          AND: [
+            { replyText: { not: null } },
+            { 
+              OR: [
+                { replyCategory: 'Other' },
+                { 
+                  AND: [
+                    { replyCategory: { equals: null } },
+                    { replyText: { not: { contains: 'STOP' } } }
+                  ]
+                }
+              ]
+            }
+          ]
+        };
+      }
     }
 
-    // Fetch stats from database with pagination
+    // Get total count for pagination (filtered)
+    const total = await prisma.mauticSmsStat.count({
+      where: whereClause
+    });
+
+    // Get campaign-level stats (NOT just current page)
+    // const campaignStats = await prisma.mauticSmsStat.groupBy({
+    //   by: [],
+    //   where: { smsId: smsCampaign.id },
+    //   _count: true
+    // });
+
+    const totalWithReplies = await prisma.mauticSmsStat.count({
+      where: { 
+        ...whereClause,
+        replyText: { not: null }
+      }
+    });
+
+    const totalDelivered = await prisma.mauticSmsStat.count({
+      where: { 
+        ...whereClause,
+        isFailed: '0'
+      }
+    });
+
+    const totalFailed = await prisma.mauticSmsStat.count({
+      where: { 
+        ...whereClause,
+        isFailed: '1'
+      }
+    });
+
+    // Fetch stats with pagination - sort to put those with replies on top
     const skip = (parseInt(page) - 1) * parseInt(limit);
     
-    // Sort: Contacts with replies first (by most recent reply), then by date sent
-    const orderBy = [
-      { repliedAt: 'desc' }, // Replied contacts first, most recent first
-      { dateSent: 'desc' }   // Then by date sent
-    ];
-    
-    const [stats, total, deliveredCount, failedCount, repliedCount] = await Promise.all([
-      // Get paginated stats
-      prisma.mauticSmsStat.findMany({
-        where: whereClause,
-        orderBy: orderBy,
-        skip: skip,
-        take: parseInt(limit)
-      }),
-      // Get total count
-      prisma.mauticSmsStat.count({
-        where: whereClause
-      }),
-      // Get delivered count
-      prisma.mauticSmsStat.count({
-        where: { 
-          smsId: smsCampaign.id,
-          isFailed: '0'
-        }
-      }),
-      // Get failed count
-      prisma.mauticSmsStat.count({
-        where: { 
-          smsId: smsCampaign.id,
-          isFailed: '1'
-        }
-      }),
-      // Get replied count
-      prisma.mauticSmsStat.count({
-        where: { 
-          smsId: smsCampaign.id,
-          replyText: { not: null }
-        }
-      })
-    ]);
+    const stats = await prisma.mauticSmsStat.findMany({
+      where: whereClause,
+      orderBy: [
+        // First, sort by whether there's a reply (put non-null on top)
+        { replyText: 'desc' },
+        // Then sort by reply date descending (newest first)
+        { repliedAt: 'desc' }
+      ],
+      skip: skip,
+      take: parseInt(limit)
+    });
 
-    // Check which leads are missing mobile numbers or message data
-    const leadsWithoutMobile = stats.filter(stat => !stat.mobile).map(stat => stat.leadId);
-    const leadsWithoutMessages = stats.filter(stat => !stat.messageText).map(stat => stat.leadId);
-    
-    // Check if this specific campaign needs syncing OR if any campaign for this client is syncing
-    const needsSync = (leadsWithoutMobile.length > 0 || leadsWithoutMessages.length > 0) && smsCampaign.clientId;
-    const clientSyncing = isClientSyncing(smsCampaign.clientId);
-    const isSyncing = needsSync || clientSyncing;
-    
-    // Fetch missing data in background (only if this campaign needs it and isn't already syncing)
-    if (needsSync && !clientSyncing) {
-      // Mark this campaign as syncing
-      markSmsAsSyncing(smsCampaign.clientId, smsCampaign.id);
-      
-      setImmediate(async () => {
-        try {
-          const client = await prisma.mauticClient.findUnique({
-            where: { id: smsCampaign.clientId }
-          });
-          
-          if (!client) {
-            markSmsAsSyncComplete(smsCampaign.clientId, smsCampaign.id);
-            return;
-          }
-
-          // Fetch mobile numbers if needed
-          if (leadsWithoutMobile.length > 0) {
-            logger.info(`📱 Fetching mobile numbers for ${leadsWithoutMobile.length} leads...`);
-            
-            const mobileMap = await mauticAPIService.fetchMobileNumbers(
-              client, 
-              leadsWithoutMobile,
-              5
-            );
-            
-            const updatePromises = [];
-            for (const [leadId, mobile] of mobileMap.entries()) {
-              if (mobile) {
-                updatePromises.push(
-                  prisma.mauticSmsStat.updateMany({
-                    where: { 
-                      smsId: smsCampaign.id,
-                      leadId: leadId
-                    },
-                    data: { mobile }
-                  })
-                );
-              }
-            }
-            
-            await Promise.all(updatePromises);
-            logger.info(`✅ Updated ${updatePromises.length} records with mobile numbers`);
-          }
-
-          // Fetch message and reply data if needed
-          if (leadsWithoutMessages.length > 0) {
-            logger.info(`📨 Fetching messages for ${leadsWithoutMessages.length} leads...`);
-            
-            const smsMessageService = (await import('../services/smsMessageService.js')).default;
-            await smsMessageService.batchFetchAndUpdateMessages(
-              client,
-              smsCampaign.id,
-              smsCampaign.mauticId,
-              leadsWithoutMessages,
-              5
-            );
-          }
-          
-          logger.info(`✅ Sync complete for SMS campaign ${smsCampaign.id}`);
-        } catch (error) {
-          logger.error('Failed to fetch missing data in background:', error.message);
-        } finally {
-          // Always mark as complete when done
-          markSmsAsSyncComplete(smsCampaign.clientId, smsCampaign.id);
-        }
-      });
-    }
-
-    // Transform stats to messages array
-    const messages = stats.map(stat => ({
-      leadId: stat.leadId,
-      dateSent: stat.dateSent ? stat.dateSent.toISOString() : null,
-      isFailed: stat.isFailed,
-      mobile: stat.mobile || null,
-      messageText: stat.messageText || null,
-      replyText: stat.replyText || null,
-      replyCategory: stat.replyCategory || null,
-      repliedAt: stat.repliedAt ? stat.repliedAt.toISOString() : null
-    }));
+    // Transform stats to response format
+    // Auto-categorize replies based on content if category is not set
+    const messages = stats.map(stat => {
+      let category = stat.replyCategory;
+      // Workaround: If no category is set but there's a reply, categorize based on content
+      if (!category && stat.replyText) {
+        category = stat.replyText.toUpperCase().includes('STOP') ? 'Stop' : 'Other';
+      }
+      return {
+        leadId: stat.leadId,
+        mobile: stat.mobile,
+        replyText: stat.replyText,
+        repliedAt: stat.repliedAt ? stat.repliedAt.toISOString() : null,
+        replyCategory: category,
+        messageText: stat.messageText,
+        lastSyncedAt: stat.lastSyncedAt ? stat.lastSyncedAt.toISOString() : null
+      };
+    });
 
     res.json({
       success: true,
       data: messages,
-      total,
-      page: parseInt(page),
-      limit: parseInt(limit),
-      totalPages: Math.ceil(total / parseInt(limit)),
-      delivered: deliveredCount,
-      failed: failedCount,
-      replied: repliedCount,
-      syncing: isSyncing, // Indicates if background data fetch is in progress
-      syncingDetails: isSyncing ? {
-        missingMobiles: leadsWithoutMobile.length,
-        missingMessages: leadsWithoutMessages.length
-      } : null
+      total: total,
+      delivered: totalDelivered,
+      failed: totalFailed,
+      replied: totalWithReplies,
+      pagination: {
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        totalPages: Math.ceil(total / parseInt(limit))
+      }
     });
+
   } catch (error) {
     logger.error('Failed to fetch SMS messages:', error);
     res.status(500).json({
@@ -1059,4 +1015,216 @@ async function syncSmsClientData(smsClientId) {
   }
 }
 
+/**
+ * GET /api/mautic/sms-clients/:clientId/test-endpoints
+ * TEST endpoint to verify Mautic API responses
+ * Shows raw data from /contacts and /lead_event_log endpoints
+ */
+router.get('/sms-clients/:clientId/test-endpoints', async (req, res) => {
+  try {
+    const { clientId } = req.params;
+
+    // Get Mautic client for API credentials
+    const client = await prisma.mauticClient.findUnique({
+      where: { id: parseInt(clientId) }
+    });
+
+    if (!client) {
+      return res.status(404).json({
+        success: false,
+        message: 'Mautic client not found'
+      });
+    }
+
+    // Decrypt password
+    let password;
+    try {
+      password = encryptionService.decrypt(client.password);
+    } catch (err) {
+      return res.status(400).json({
+        success: false,
+        message: 'Failed to decrypt credentials'
+      });
+    }
+
+    // Create API client
+    const auth = Buffer.from(`${client.username}:${password}`).toString('base64');
+    const apiClient = axios.create({
+      baseURL: client.mauticUrl.replace(/\/$/, ''),
+      headers: {
+        Authorization: `Basic ${auth}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: 20000,
+    });
+
+    logger.info('🧪 Testing Mautic API endpoints...');
+
+    // Test 1: Fetch contacts
+    logger.info('📞 Testing: GET /api/contacts?limit=2&start=0&search=!is:anonymous');
+    const contactsResponse = await apiClient.get('/contacts', {
+      params: {
+        limit: 2,
+        start: 0,
+        search: '!is:anonymous'
+      }
+    });
+
+    const contactsData = contactsResponse.data?.contacts || {};
+    const contactIds = Object.keys(contactsData);
+    
+    logger.info(`✅ Contacts response: ${contactIds.length} contacts returned`);
+    
+    // Show structure of first contact
+    let firstContact = null;
+    if (contactIds.length > 0) {
+      firstContact = contactsData[contactIds[0]];
+      logger.info(`   First contact structure:`, JSON.stringify(firstContact, null, 2));
+    }
+
+    // Test 2: Fetch replies
+    logger.info('💬 Testing: GET /api/stats/lead_event_log?action=reply&limit=2&start=0');
+    const repliesResponse = await apiClient.get('/stats/lead_event_log', {
+      params: {
+        'where[0][col]': 'action',
+        'where[0][expr]': 'eq',
+        'where[0][val]': 'reply',
+        limit: 2,
+        start: 0
+      }
+    });
+
+    const repliesData = repliesResponse.data?.stats || {};
+    const replyIds = Object.keys(repliesData);
+    
+    logger.info(`✅ Replies response: ${replyIds.length} replies returned`);
+    
+    // Show structure of first reply
+    let firstReply = null;
+    if (replyIds.length > 0) {
+      firstReply = repliesData[replyIds[0]];
+      logger.info(`   First reply structure:`, JSON.stringify(firstReply, null, 2));
+    }
+
+    res.json({
+      success: true,
+      test: {
+        contacts: {
+          endpoint: 'GET /api/contacts?limit=2&start=0&search=!is:anonymous',
+          totalReturned: contactIds.length,
+          sample: firstContact
+        },
+        replies: {
+          endpoint: 'GET /api/stats/lead_event_log?action=reply&limit=2&start=0',
+          totalReturned: replyIds.length,
+          sample: firstReply
+        }
+      }
+    });
+
+  } catch (error) {
+    logger.error('Test failed:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Test failed',
+      error: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/mautic/sms-clients/:clientId/campaigns/:smsId/sync-stats
+ * Manually sync SMS stats for a specific campaign using bulk parallel fetching
+ * Fetches contacts (bulk) + replies (bulk), maps them, clears old data, stores new stats
+ * Query params:
+ *   - clearExisting=true (default) - Clear old stats before syncing
+ *   - clearExisting=false - Keep old stats, append new ones
+ */
+router.post('/sms-clients/:clientId/campaigns/:smsId/sync-stats', async (req, res) => {
+  try {
+    const { clientId, smsId } = req.params;
+    const { clearExisting } = req.query;
+    const clientIdInt = parseInt(clientId);
+    const smsIdInt = parseInt(smsId);
+    
+    // Default to clearing existing stats (fresh sync from beginning)
+    const shouldClear = clearExisting !== 'false'; // true unless explicitly set to 'false'
+
+    logger.info(`🔄 Starting sync for campaign ${smsIdInt}, clearExisting=${shouldClear}`);
+
+    // Get Mautic client for API credentials
+    const client = await prisma.mauticClient.findUnique({
+      where: { id: clientIdInt }
+    });
+
+    if (!client) {
+      return res.status(404).json({
+        success: false,
+        message: 'Mautic client not found'
+      });
+    }
+
+    // Decrypt password for API access
+    let password;
+    try {
+      password = encryptionService.decrypt(client.password);
+    } catch (err) {
+      return res.status(400).json({
+        success: false,
+        message: 'Failed to decrypt client credentials'
+      });
+    }
+
+    // Get SMS campaign details
+    const smsCampaign = await prisma.mauticSms.findUnique({
+      where: { id: smsIdInt }
+    });
+
+    if (!smsCampaign) {
+      return res.status(404).json({
+        success: false,
+        message: 'SMS campaign not found'
+      });
+    }
+
+    // Run sync with decrypted credentials using efficient parallel bulk fetching
+    const syncResult = await smsSyncService.syncSmsStats(
+      {
+        name: client.name,
+        mauticUrl: client.mauticUrl,
+        username: client.username,
+        password: password
+      },
+      smsIdInt,
+      smsCampaign.mauticId,
+      shouldClear  // Pass clearExisting flag
+    );
+
+    // Update campaign sync info
+    await prisma.mauticSms.update({
+      where: { id: smsIdInt },
+      data: {
+        lastSyncedAt: new Date(),
+        isSynced: true
+      }
+    });
+
+    logger.info(`✅ Manual SMS stats sync completed for campaign ${smsIdInt}`);
+
+    res.json({
+      success: true,
+      data: syncResult
+    });
+  } catch (error) {
+    logger.error('Failed to sync SMS stats:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to sync SMS stats',
+      error: error.message
+    });
+  }
+});
+
+// ============================================
 export default router;
+

@@ -653,6 +653,9 @@ model MauticSmsStat {
   replyText     String?   @db.Text // Content of the latest reply (if any)
   replyCategory String?   // "Stop", "Unsubscribe", or "Other"
   repliedAt     DateTime? // Timestamp of latest reply
+  isSynced      Boolean   @default(false) // Track if enrichment (mobile/message/reply) is complete
+  lastSyncedAt  DateTime? // When this record was last enriched with mobile/message/reply data
+  syncError     String?   // Error message if fetch failed (for retry logic)
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -662,6 +665,9 @@ model MauticSmsStat {
   @@index([smsId])
   @@index([replyCategory])
   @@index([repliedAt])
+  @@index([isSynced])
+  @@index([lastSyncedAt])
+  @@index([isSynced, mobile])
   @@map("mautic_sms_stats")
 }
 
