@@ -700,12 +700,16 @@ router.get('/sms-clients/:clientId/sync-status', async (req, res) => {
 /**
  * GET /api/mautic/sms-campaigns/:smsId/messages
  * Get SMS stats/replies for a specific SMS campaign with pagination
- * Simple endpoint - just returns the synced data (leadId, mobile, reply, etc.)
+ * Sorts by replied first (those with replies on top), then by date
+ * Returns campaign-level totals (not just current page)
  */
 router.get('/sms-campaigns/:smsId/messages', async (req, res) => {
   try {
     const { smsId } = req.params;
-    const { page = 1, limit = 100 } = req.query;
+    const { page = 1, limit = 100, replyFilter = 'all' } = req.query;
+
+    console.log("filter", replyFilter);
+    
 
     // Find the SMS campaign in database
     const smsCampaign = await prisma.mauticSms.findFirst({
@@ -719,35 +723,116 @@ router.get('/sms-campaigns/:smsId/messages', async (req, res) => {
       });
     }
 
-    // Fetch stats from database with pagination (no COUNT queries)
+    // Build where clause based on filter
+    // Since replyCategory may be NULL, filter on both category and replyText content
+    let whereClause = { smsId: smsCampaign.id };
+    
+    if (replyFilter !== 'all') {
+      if (replyFilter === 'Stop') {
+        // Show replies with Stop category OR replies containing 'STOP' text
+        whereClause = {
+          smsId: smsCampaign.id,
+          OR: [
+            { replyCategory: 'Stop' },
+            { replyText: { contains: 'STOP' } }
+          ]
+        };
+      } else if (replyFilter === 'Other') {
+        // Show replies with Other category OR replies with text that don't contain 'STOP'
+        whereClause = {
+          smsId: smsCampaign.id,
+          AND: [
+            { replyText: { not: null } },
+            { 
+              OR: [
+                { replyCategory: 'Other' },
+                { 
+                  AND: [
+                    { replyCategory: { equals: null } },
+                    { replyText: { not: { contains: 'STOP' } } }
+                  ]
+                }
+              ]
+            }
+          ]
+        };
+      }
+    }
+
+    // Get total count for pagination (filtered)
+    const total = await prisma.mauticSmsStat.count({
+      where: whereClause
+    });
+
+    // Get campaign-level stats (NOT just current page)
+    // const campaignStats = await prisma.mauticSmsStat.groupBy({
+    //   by: [],
+    //   where: { smsId: smsCampaign.id },
+    //   _count: true
+    // });
+
+    const totalWithReplies = await prisma.mauticSmsStat.count({
+      where: { 
+        ...whereClause,
+        replyText: { not: null }
+      }
+    });
+
+    const totalDelivered = await prisma.mauticSmsStat.count({
+      where: { 
+        ...whereClause,
+        isFailed: '0'
+      }
+    });
+
+    const totalFailed = await prisma.mauticSmsStat.count({
+      where: { 
+        ...whereClause,
+        isFailed: '1'
+      }
+    });
+
+    // Fetch stats with pagination - sort to put those with replies on top
     const skip = (parseInt(page) - 1) * parseInt(limit);
     
     const stats = await prisma.mauticSmsStat.findMany({
-      where: { smsId: smsCampaign.id },
-      orderBy: { repliedAt: 'desc' },
+      where: whereClause,
+      orderBy: [
+        // First, sort by whether there's a reply (put non-null on top)
+        { replyText: 'desc' },
+        // Then sort by reply date descending (newest first)
+        { repliedAt: 'desc' }
+      ],
       skip: skip,
       take: parseInt(limit)
     });
 
-    // Get total count only once for pagination
-    const total = await prisma.mauticSmsStat.count({
-      where: { smsId: smsCampaign.id }
-    });
-
     // Transform stats to response format
-    const messages = stats.map(stat => ({
-      leadId: stat.leadId,
-      mobile: stat.mobile,
-      replyText: stat.replyText,
-      repliedAt: stat.repliedAt ? stat.repliedAt.toISOString() : null,
-      replyCategory: stat.replyCategory,
-      messageText: stat.messageText,
-      lastSyncedAt: stat.lastSyncedAt ? stat.lastSyncedAt.toISOString() : null
-    }));
+    // Auto-categorize replies based on content if category is not set
+    const messages = stats.map(stat => {
+      let category = stat.replyCategory;
+      // Workaround: If no category is set but there's a reply, categorize based on content
+      if (!category && stat.replyText) {
+        category = stat.replyText.toUpperCase().includes('STOP') ? 'Stop' : 'Other';
+      }
+      return {
+        leadId: stat.leadId,
+        mobile: stat.mobile,
+        replyText: stat.replyText,
+        repliedAt: stat.repliedAt ? stat.repliedAt.toISOString() : null,
+        replyCategory: category,
+        messageText: stat.messageText,
+        lastSyncedAt: stat.lastSyncedAt ? stat.lastSyncedAt.toISOString() : null
+      };
+    });
 
     res.json({
       success: true,
       data: messages,
+      total: total,
+      delivered: totalDelivered,
+      failed: totalFailed,
+      replied: totalWithReplies,
       pagination: {
         total,
         page: parseInt(page),
