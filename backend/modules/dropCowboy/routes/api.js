@@ -45,6 +45,27 @@ router.get("/metrics", authenticate, async (req, res) => {
 
     const metrics = await dataService.getMetrics(filters);
 
+    // Ensure metrics is valid before processing
+    if (!metrics || !metrics.campaigns) {
+      logger.warn("DropCowboy metrics returned invalid data");
+      return res.json({
+        success: true,
+        data: {
+          campaigns: [],
+          overall: {
+            totalCampaigns: 0,
+            totalSent: 0,
+            successfulDeliveries: 0,
+            failedSends: 0,
+            otherStatus: 0,
+            totalCost: 0,
+            averageSuccessRate: 0,
+          },
+          lastUpdated: null,
+        },
+      });
+    }
+
     // Apply pagination if requested
     let paginatedMetrics = { ...metrics };
 
@@ -75,7 +96,11 @@ router.get("/metrics", authenticate, async (req, res) => {
       data: paginatedMetrics,
     });
   } catch (error) {
-    logger.error("Error fetching DropCowboy metrics", { error: error.message });
+    logger.error("Error fetching DropCowboy metrics", { 
+      error: error.message,
+      stack: error.stack,
+      user: req.user?.id 
+    });
     res.status(500).json({
       success: false,
       message: "Failed to fetch metrics",

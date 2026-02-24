@@ -168,9 +168,12 @@ const Dashboard = () => {
       if (response.data?.success) {
         setVoicemailMetrics(response.data.data)
         generateInsights(response.data.data, 'voicemail')
+      } else {
+        setVoicemailMetrics(null)
       }
     } catch (error) {
       console.error('Error fetching voicemail metrics:', error)
+      setVoicemailMetrics(null)
     }
   }
 
@@ -315,7 +318,7 @@ const Dashboard = () => {
   }, [emailMetrics])
 
   const voicemailChartData = useMemo(() => {
-    if (!voicemailMetrics?.campaigns) return []
+    if (!voicemailMetrics?.campaigns || !Array.isArray(voicemailMetrics.campaigns)) return []
     return voicemailMetrics.campaigns.slice(0, 6).map(campaign => ({
       name: campaign.campaignName?.substring(0, 12) || 'Campaign',
       sent: campaign.totalSent || 0,
@@ -326,11 +329,11 @@ const Dashboard = () => {
 
   const pieChartData = useMemo(() => {
     if (!voicemailMetrics?.overall) return []
-    const { successfulDeliveries, failedSends, otherStatus } = voicemailMetrics.overall
+    const { successfulDeliveries = 0, failedSends = 0, otherStatus = 0 } = voicemailMetrics.overall
     return [
-      { name: 'Delivered', value: successfulDeliveries || 0, color: '#10B981' },
-      { name: 'Failed', value: failedSends || 0, color: '#EF4444' },
-      { name: 'Other', value: otherStatus || 0, color: '#6B7280' }
+      { name: 'Delivered', value: successfulDeliveries, color: '#10B981' },
+      { name: 'Failed', value: failedSends, color: '#EF4444' },
+      { name: 'Other', value: otherStatus, color: '#6B7280' }
     ].filter(d => d.value > 0)
   }, [voicemailMetrics])
 
@@ -496,7 +499,7 @@ const Dashboard = () => {
             </div>
 
             {emailChartData.length > 0 && (
-              <div className="h-48">
+              <div className="h-48 min-h-[192px]">
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={emailChartData}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
@@ -603,7 +606,7 @@ const Dashboard = () => {
             </div>
 
             {pieChartData.length > 0 && (
-              <div className="h-40 flex items-center justify-center">
+              <div className="h-40 min-h-[160px] flex items-center justify-center">
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
                     <Pie

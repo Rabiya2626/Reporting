@@ -256,6 +256,8 @@ class DataService {
 
   async getMetrics(filters = {}) {
     try {
+      logger.debug('Fetching DropCowboy metrics with filters:', filters);
+      
       // Build where clause for filters
       const whereClause = {};
 
@@ -290,6 +292,7 @@ class DataService {
           whereClause.campaignId = { in: accessibleCampaigns.map(c => c.campaignId) };
         } else {
           // No accessible clients - return empty result
+          logger.debug('No accessible clients found for user');
           whereClause.campaignId = { in: [] };
         }
       } else {
@@ -604,7 +607,11 @@ class DataService {
           lastSync?.syncCompletedAt?.toISOString() || new Date().toISOString(),
       };
     } catch (error) {
-      logger.error("Error getting metrics:", error);
+      logger.error("Error getting DropCowboy metrics:", {
+        error: error.message,
+        stack: error.stack,
+        filters
+      });
       // Return empty data structure on error
       return {
         campaigns: [],
