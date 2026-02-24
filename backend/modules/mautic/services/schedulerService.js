@@ -45,6 +45,7 @@ class MauticSchedulerService {
 
     console.log(`⏰ Starting Mautic sync scheduler: ${schedule}`);
 
+    // Main sync cron job
     this.cronJob = cron.schedule(schedule, async () => {
       if (this.isRunning) {
         console.log('⏭️  Skipping Mautic sync - previous sync still running');
@@ -64,7 +65,7 @@ class MauticSchedulerService {
     if (this.cronJob) {
       this.cronJob.stop();
       this.cronJob = null;
-      console.log('🛑 Mautic scheduler stopped');
+      console.log('🛑 Mautic sync scheduler stopped');
     }
   }
 

@@ -1747,6 +1747,9 @@ class MauticAPIService {
     try {
       logger.info(`📊 Fetching SMS stats for campaign ${mauticSmsId} (local ID: ${localSmsId})${forceFull ? ' [FORCE FULL]' : ''}`);
       
+      // Import SMS stats page manager for safe resumption
+      const { default: smsPageManager } = await import('./smsStatsPageManager.js');
+      
       // Mark as syncing
       try {
         const { markSmsAsSyncing } = await import('../routes/smsClient.js');
@@ -1799,21 +1802,56 @@ class MauticAPIService {
         logger.info(`   🔄 Force full sync requested - will re-fetch all stats`);
       }
       
+      // 🔄 Resume from orphaned pages if process was interrupted
+      const orphanedPages = smsPageManager.recoverOrphanedPages();
+      let totalCreated = 0;
+      let totalSkipped = 0;
+      
+      if (orphanedPages.length > 0) {
+        logger.info(`\n🔄 RESUMING: Processing ${orphanedPages.length} orphaned pages from previous sync...`);
+        
+        const { default: smsService } = await import('./smsService.js');
+        
+        for (const orphaned of orphanedPages) {
+          try {
+            logger.info(`   📖 Processing orphaned page ${orphaned.pageNumber} (${orphaned.data.length} records)...`);
+            
+            // Store stats from orphaned page
+            const storeResult = await smsService.storeSmsStats(localSmsId, mauticSmsId, orphaned.data, true);
+            
+            logger.info(`   ✅ Inserted page ${orphaned.pageNumber}: ${storeResult.created} created, ${storeResult.skipped} skipped`);
+            
+            totalCreated += storeResult.created || 0;
+            totalSkipped += storeResult.skipped || 0;
+            
+            // Delete the temp file after successful insertion
+            smsPageManager.deletePage(orphaned.pageNumber);
+            
+          } catch (e) {
+            logger.error(`   ❌ Failed to process orphaned page ${orphaned.pageNumber}:`, e.message);
+            // Leave the file for retry on next sync
+          }
+        }
+        
+        logger.info(`✅ Orphaned pages processed: ${totalCreated} created, ${totalSkipped} skipped\n`);
+      }
+      
       const apiClient = this.createClient(client);
 
       let allStats = [];
+      let pageNumber = orphanedPages.length > 0 ? Math.max(...orphanedPages.map(p => p.pageNumber)) + 1 : 1;
       let start = 0;
       const limit = 5000; // Fetch in chunks to avoid timeout
       let hasMore = true;
       let fetchAttempts = 0;
       const maxAttempts = 100; // Safety limit
 
-      // Fetch stats in chunks
+      // Fetch stats in chunks and save each page
       while (hasMore && fetchAttempts < maxAttempts) {
         fetchAttempts++;
 
         try {
-          logger.info(`   Fetching chunk ${fetchAttempts} (start: ${start}, limit: ${limit})...`);
+          logger.info(`   Fetching page ${pageNumber} (start: ${start}, limit: ${limit})...`);
 
           const response = await this.retryWithBackoff(() =>
             apiClient.get('/stats/sms_message_stats', {
@@ -1830,13 +1868,12 @@ class MauticAPIService {
           );
 
           // Log the raw response structure for debugging
-          logger.info(`   Response structure: ${JSON.stringify({
+          logger.debug(`   Response structure: ${JSON.stringify({
             hasData: !!response.data,
             hasStats: !!response.data?.stats,
             statsType: Array.isArray(response.data?.stats) ? 'array' : typeof response.data?.stats,
             statsLength: Array.isArray(response.data?.stats) ? response.data.stats.length : 'N/A',
-            total: response.data?.total || response.data?.totalResults || 'N/A',
-            sampleKeys: response.data?.stats ? Object.keys(Array.isArray(response.data.stats) ? (response.data.stats[0] || {}) : response.data.stats).slice(0, 5) : []
+            total: response.data?.total || response.data?.totalResults || 'N/A'
           })}`);
 
           // Handle both array and object responses
@@ -1851,7 +1888,7 @@ class MauticAPIService {
             stats = response.data.data;
           }
 
-          logger.info(`   Fetched ${stats.length} stats in this chunk`);
+          logger.info(`   Page ${pageNumber}: Fetched ${stats.length} SMS stats`);
 
           if (stats.length === 0) {
             logger.info(`   No more stats to fetch (empty response)`);
@@ -1859,27 +1896,49 @@ class MauticAPIService {
             break;
           }
 
-          // Add to collection
-          allStats.push(...stats);
+          // 💾 SAVE PAGE TO DISK before inserting
+          const saveSuccess = smsPageManager.savePage(pageNumber, stats);
+          
+          if (!saveSuccess) {
+            logger.warn(`   ⚠️  Page ${pageNumber} save failed - skipping database insert to be safe`);
+            hasMore = false;
+            break;
+          }
+
+          // 📝 INSERT INTO DATABASE after file saved
+          logger.info(`   📝 Inserting page ${pageNumber} into database...`);
+          const { default: smsService } = await import('./smsService.js');
+          
+          const storeResult = await smsService.storeSmsStats(localSmsId, mauticSmsId, stats, true);
+          
+          logger.info(`   ✅ Page ${pageNumber} inserted: ${storeResult.created} created, ${storeResult.skipped} skipped`);
+          
+          totalCreated += storeResult.created || 0;
+          totalSkipped += storeResult.skipped || 0;
+
+          // 🗑️ DELETE PAGE FILE after successful insertion
+          smsPageManager.deletePage(pageNumber);
 
           // Check if we should continue
           const total = response.data?.total || response.data?.totalResults || 0;
           if (stats.length < limit) {
             // Got less than requested, we're done
-            logger.info(`   Received partial chunk (${stats.length} < ${limit}), stopping`);
+            logger.info(`   Page ${pageNumber}: Partial chunk (${stats.length} < ${limit}), stopping`);
             hasMore = false;
-          } else if (total > 0 && allStats.length >= total) {
+          } else if (total > 0 && (allStats.length + stats.length) >= total) {
             // Reached the total
-            logger.info(`   Reached total (${allStats.length} >= ${total}), stopping`);
+            logger.info(`   Page ${pageNumber}: Reached total, stopping`);
             hasMore = false;
           } else {
-            // Continue to next chunk
+            // Continue to next page
+            allStats.push(...stats); // Track for total count
             start += stats.length;
-            logger.info(`   Continuing to next chunk (total so far: ${allStats.length})`);
+            pageNumber++;
+            logger.info(`   Continuing to page ${pageNumber} (total so far: ${allStats.length})`);
           }
 
         } catch (chunkError) {
-          logger.error(`   Error fetching chunk ${fetchAttempts}:`, chunkError.message);
+          logger.error(`   Error fetching page ${pageNumber}:`, chunkError.message);
           // If first chunk fails, throw error
           if (fetchAttempts === 1) {
             throw chunkError;
@@ -1889,28 +1948,19 @@ class MauticAPIService {
         }
       }
 
-      logger.info(`✅ Fetched total of ${allStats.length} SMS stats for campaign ${mauticSmsId}`);
+      logger.info(`✅ Fetched and stored total of ${allStats.length} SMS stats for campaign ${mauticSmsId}`);
 
-      // If no stats, return early
-      if (allStats.length === 0) {
+      // If no stats were fetched and no orphaned pages, return early
+      if (allStats.length === 0 && orphanedPages.length === 0) {
         logger.info(`⚠️  No SMS stats found for campaign ${mauticSmsId} - campaign may not have been sent yet`);
         return { created: 0, skipped: 0, total: 0 };
       }
 
-      // Log sample stat for debugging
-      if (allStats.length > 0) {
-        logger.info(`   Sample stat structure: ${JSON.stringify(allStats[0])}`);
-      }
-
-      // Store stats in database
-      const { default: smsService } = await import('./smsService.js');
-
-      // Always fetch message/reply data during sync
-      logger.info(`📨 Fetching message and reply data for all contacts...`);
-
-      const storeResult = await smsService.storeSmsStats(localSmsId, mauticSmsId, allStats, true);
-
-      logger.info(`✅ Stored SMS stats: ${storeResult.created} created, ${storeResult.skipped} skipped`);
+      // 📊 Final Results: Combine pages from resume + fresh fetch
+      logger.info(`\n📊 SMS Stats Sync Complete for campaign ${mauticSmsId}`);
+      logger.info(`   From orphaned pages: ${totalCreated} created, ${totalSkipped} skipped`);
+      logger.info(`   From fresh fetch: Additional records inserted incrementally`);
+      logger.info(`   Total: ${totalCreated} created, ${totalSkipped} skipped`);
       
       // Mark as sync complete
       try {
@@ -1920,7 +1970,12 @@ class MauticAPIService {
         // Ignore if tracking module not available
       }
       
-      return storeResult;
+      return {
+        created: totalCreated,
+        skipped: totalSkipped,
+        total: totalCreated + totalSkipped,
+        message: 'SMS stats synced with page-based resumable checkpoints'
+      };
 
     } catch (error) {
       logger.error(`❌ Failed to fetch and store SMS stats for campaign ${mauticSmsId}:`, {
@@ -2010,7 +2065,276 @@ class MauticAPIService {
   }
 
   /**
-   * Fetch mobile numbers for multiple leads - SEQUENTIAL processing
+   * ✅ NEW: Fetch mobile numbers in BULK (parallel) for specific lead IDs
+   * Fetches all contacts with mobiles in parallel, filters to requested leads
+   * Much faster than sequential per-contact fetches
+   * @param {Object} client - Mautic client
+   * @param {Array<number>} leadIds - Array of lead IDs to fetch mobiles for
+   * @returns {Promise<Map>} Map of leadId -> mobile number
+   */
+  async fetchMobileNumbersBulk(client, leadIds) {
+    try {
+      const uniqueLeadIds = new Set(leadIds.map(id => parseInt(id)).filter(id => id > 0));
+      
+      if (uniqueLeadIds.size === 0) {
+        logger.warn(`   ⚠️  No valid lead IDs provided for bulk mobile fetch`);
+        return new Map();
+      }
+
+      logger.info(`📱 Fetching mobile numbers in BULK (parallel) for ${uniqueLeadIds.size} leads...`);
+      
+      const apiClient = this.createClient(client);
+      const mobileMap = new Map();
+      
+      // STEP 1: Get total contact count (first request)
+      const firstReq = await this.retryWithBackoff(() =>
+        apiClient.get('/contacts', {
+          params: {
+            limit: 1,
+            search: '!is:anonymous'
+          }
+        })
+      );
+      
+      const total = firstReq.data?.total || 0;
+      if (total === 0) {
+        logger.warn(`   ⚠️  No contacts found in Mautic`);
+        return new Map();
+      }
+
+      const pageSize = 500;
+      const totalPages = Math.ceil(total / pageSize);
+      logger.info(`   📊 Total contacts: ${total} records, fetching in ${totalPages} pages (${pageSize} per page)`);
+
+      // STEP 2: Fetch all pages in parallel
+      const results = new Array(totalPages);
+      let activeRequests = 0;
+      let finishedPages = 0;
+      let currentPageIndex = 0;
+
+      await new Promise((resolve, reject) => {
+        const scheduleNextRequest = () => {
+          while (activeRequests < 50 && currentPageIndex < totalPages) {
+            const pageIndex = currentPageIndex++;
+            const start = pageIndex * pageSize;
+            activeRequests++;
+
+            const url = `/contacts?start=${start}&limit=${pageSize}&search=!is:anonymous`;
+            
+            this.retryWithBackoff(() => apiClient.get(url))
+              .then(res => {
+                results[pageIndex] = res.data?.contacts || {};
+                activeRequests--;
+                finishedPages++;
+                
+                // Show progress
+                const progress = ((finishedPages / totalPages) * 100).toFixed(1);
+                process.stdout.write(`\r   ⚡ Progress: ${progress}% (${finishedPages}/${totalPages})`);
+                
+                if (finishedPages === totalPages) {
+                  console.log();
+                  resolve();
+                } else {
+                  scheduleNextRequest();
+                }
+              })
+              .catch(err => {
+                logger.error(`   ❌ Failed to fetch page ${pageIndex}: ${err.message}`);
+                activeRequests--;
+                scheduleNextRequest();
+              });
+          }
+        };
+
+        scheduleNextRequest();
+      });
+
+      // STEP 3: Extract mobiles from fetched contacts
+      let totalProcessed = 0;
+      let foundCount = 0;
+      
+      for (const contactsObj of results) {
+        if (!contactsObj || typeof contactsObj !== 'object') continue;
+
+        for (const [contactId, contact] of Object.entries(contactsObj)) {
+          const leadId = parseInt(contactId);
+          totalProcessed++;
+
+          // Only process if this lead was requested
+          if (!uniqueLeadIds.has(leadId)) continue;
+
+          // Extract mobile from multiple possible field paths
+          let mobile = '';
+          const allMobile = contact.fields?.all?.mobile;
+          const coreMobile = contact.fields?.core?.mobile;
+
+          if (allMobile && typeof allMobile === 'object' && 'value' in allMobile) {
+            mobile = allMobile.value || '';
+          } else if (coreMobile && typeof coreMobile === 'object' && 'value' in coreMobile) {
+            mobile = coreMobile.value || '';
+          } else if (typeof allMobile === 'string') {
+            mobile = allMobile;
+          } else if (typeof coreMobile === 'string') {
+            mobile = coreMobile;
+          }
+
+          if (mobile && mobile.trim()) {
+            mobileMap.set(leadId, mobile.trim());
+            foundCount++;
+          }
+        }
+      }
+
+      logger.info(`✅ Bulk mobile fetch complete: Found ${foundCount}/${uniqueLeadIds.size} mobiles (scanned ${totalProcessed} contacts)`);
+      return mobileMap;
+
+    } catch (error) {
+      logger.error(`Failed to fetch mobile numbers in bulk:`, error.message);
+      return new Map();
+    }
+  }
+
+  /**
+   * ✅ NEW: Fetch SMS replies in BULK (parallel) for specific lead IDs
+   * @param {Object} client - Mautic client
+   * @param {Array<number>} leadIds - Array of lead IDs to fetch replies for
+   * @returns {Promise<Map>} Map of leadId -> {reply, dateAdded}
+   */
+  async fetchSmsRepliesBulk(client, leadIds) {
+    try {
+      const uniqueLeadIds = new Set(leadIds.map(id => parseInt(id)).filter(id => id > 0));
+      
+      if (uniqueLeadIds.size === 0) {
+        logger.warn(`   ⚠️  No valid lead IDs provided for bulk reply fetch`);
+        return new Map();
+      }
+
+      logger.info(`💬 Fetching SMS replies in BULK (parallel) for ${uniqueLeadIds.size} leads...`);
+      
+      const apiClient = this.createClient(client);
+      const repliesMap = new Map();
+      
+      // STEP 1: Get total reply count (first request)
+      const firstReq = await this.retryWithBackoff(() =>
+        apiClient.get('/stats/lead_event_log', {
+          params: {
+            'where[0][col]': 'action',
+            'where[0][expr]': 'eq',
+            'where[0][val]': 'reply',
+            limit: 1
+          }
+        })
+      );
+      
+      const total = firstReq.data?.total || 0;
+      if (total === 0) {
+        logger.warn(`   ⚠️  No SMS replies found`);
+        return new Map();
+      }
+
+      const pageSize = 500;
+      const totalPages = Math.ceil(total / pageSize);
+      logger.info(`   📊 Total replies: ${total} records, fetching in ${totalPages} pages`);
+
+      // STEP 2: Fetch all pages in parallel
+      const results = new Array(totalPages);
+      let activeRequests = 0;
+      let finishedPages = 0;
+      let currentPageIndex = 0;
+
+      await new Promise((resolve, reject) => {
+        const scheduleNextRequest = () => {
+          while (activeRequests < 50 && currentPageIndex < totalPages) {
+            const pageIndex = currentPageIndex++;
+            const start = pageIndex * pageSize;
+            activeRequests++;
+
+            this.retryWithBackoff(() =>
+              apiClient.get('/stats/lead_event_log', {
+                params: {
+                  'where[0][col]': 'action',
+                  'where[0][expr]': 'eq',
+                  'where[0][val]': 'reply',
+                  start,
+                  limit: pageSize
+                }
+              })
+            )
+              .then(res => {
+                results[pageIndex] = res.data?.stats || {};
+                activeRequests--;
+                finishedPages++;
+                
+                // Show progress
+                const progress = ((finishedPages / totalPages) * 100).toFixed(1);
+                process.stdout.write(`\r   ⚡ Progress: ${progress}% (${finishedPages}/${totalPages})`);
+                
+                if (finishedPages === totalPages) {
+                  console.log();
+                  resolve();
+                } else {
+                  scheduleNextRequest();
+                }
+              })
+              .catch(err => {
+                logger.error(`   ❌ Failed to fetch replies page ${pageIndex}: ${err.message}`);
+                activeRequests--;
+                scheduleNextRequest();
+              });
+          }
+        };
+
+        scheduleNextRequest();
+      });
+
+      // STEP 3: Extract replies from fetched data
+      let totalProcessed = 0;
+      let foundCount = 0;
+      
+      for (const statsObj of results) {
+        if (!statsObj || typeof statsObj !== 'object') continue;
+
+        for (const [recordId, stat] of Object.entries(statsObj)) {
+          const leadId = parseInt(stat.lead_id || stat.leadId || 0);
+          totalProcessed++;
+
+          // Only process if this lead was requested
+          if (!uniqueLeadIds.has(leadId)) continue;
+
+          let replyMessage = 'STOP';
+          if (stat.properties) {
+            try {
+              const parsed = typeof stat.properties === 'string' 
+                ? JSON.parse(stat.properties) 
+                : stat.properties;
+              replyMessage = parsed.message || parsed.body || parsed.text || stat.properties || 'STOP';
+            } catch {
+              replyMessage = stat.properties;
+            }
+          }
+
+          if (leadId > 0) {
+            repliesMap.set(leadId, {
+              reply: String(replyMessage).trim(),
+              dateAdded: stat.date_added || stat.dateAdded || new Date().toISOString()
+            });
+            foundCount++;
+          }
+        }
+      }
+
+      logger.info(`✅ Bulk reply fetch complete: Found ${foundCount}/${uniqueLeadIds.size} replies (scanned ${totalProcessed} events)`);
+      return repliesMap;
+
+    } catch (error) {
+      logger.error(`Failed to fetch SMS replies in bulk:`, error.message);
+      return new Map();
+    }
+  }
+
+  /**
+   * ⚠️ DEPRECATED: Use fetchMobileNumbersBulk() instead for better performance
+   * Fetch contact details for multiple leads - SEQUENTIAL processing (SLOW)
    * @param {Object} client - Client configuration
    * @param {Array<number>} leadIds - Array of lead IDs
    * @returns {Promise<Map>} Map of leadId -> mobile number
@@ -2019,6 +2343,7 @@ class MauticAPIService {
     try {
       const uniqueLeadIds = [...new Set(leadIds)];
 
+      logger.info(`⚠️  DEPRECATED: Using sequential mobile fetch (slow) - should use fetchMobileNumbersBulk() instead`);
       logger.info(`Fetching mobile numbers for ${uniqueLeadIds.length} unique leads (sequential)...`);
 
       const mobileMap = new Map();

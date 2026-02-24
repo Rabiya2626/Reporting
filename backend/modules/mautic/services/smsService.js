@@ -433,10 +433,11 @@ class SmsService {
           return stat.lead_id || stat.leadId || stat.contact_id || stat.contactId;
         }).filter(Boolean))];
 
-        logger.info(`   📱 Fetching mobile numbers for ${leadIds.length} unique leads...`);
+        logger.info(`   📱 Fetching mobile numbers in BULK (parallel)...`);
 
         // Get client credentials for fetching mobile numbers and messages
         let mobileMap = new Map();
+        let repliesMap = new Map();
         let client = null;
         
         try {
@@ -448,42 +449,36 @@ class SmsService {
           if (smsRecord?.client) {
             client = smsRecord.client;
             const mauticAPI = (await import('./mauticAPI.js')).default;
-            mobileMap = await mauticAPI.fetchMobileNumbers(
-              client,
-              leadIds,
-              5 // 5 concurrent requests
-            );
-            logger.info(`   ✅ Fetched ${mobileMap.size} mobile numbers`);
+            
+            // ✅ Use NEW BULK fetch for mobiles (parallel - 50 concurrent)
+            mobileMap = await mauticAPI.fetchMobileNumbersBulk(client, leadIds);
+            logger.info(`   ✅ Bulk fetched mobiles: ${mobileMap.size} found`);
+            
+            // ✅ Use NEW BULK fetch for replies (parallel - 50 concurrent)
+            repliesMap = await mauticAPI.fetchSmsRepliesBulk(client, leadIds);
+            logger.info(`   ✅ Bulk fetched replies: ${repliesMap.size} found`);
           } else {
-            logger.warn(`   ⚠️  Could not fetch mobile numbers - client not found`);
+            logger.warn(`   ⚠️  Could not fetch data - client not found`);
           }
         } catch (mobileError) {
-          logger.warn(`   ⚠️  Failed to fetch mobile numbers: ${mobileError.message}`);
-          // Continue without mobiles - they can be fetched later
+          logger.warn(`   ⚠️  Failed to fetch bulk data: ${mobileError.message}`);
+          // Continue without mobiles/replies - they can be fetched later
         }
 
-        // Fetch message and reply data if requested and client available
+        // ✅ Message data already included in repliesMap from bulk fetch above
         let messageDataMap = new Map();
-        if (fetchMessages && client && leadIds.length > 0) {
-          logger.info(`   📨 Fetching message and reply data for ${leadIds.length} leads (sequential for accuracy)...`);
-          try {
-            const smsMessageService = (await import('./smsMessageService.js')).default;
-            const result = await smsMessageService.batchFetchAndUpdateMessages(
-              client,
-              smsId,
-              mauticSmsId,
-              leadIds,
-              true // Return data instead of updating DB
-            );
-            
-            if (result.messageData) {
-              messageDataMap = result.messageData;
-              logger.info(`   ✅ Fetched message data for ${messageDataMap.size} leads`);
-            }
-          } catch (messageError) {
-            logger.warn(`   ⚠️  Failed to fetch message data: ${messageError.message}`);
-            // Continue without message data - can be fetched later via backfill script
+        
+        // Convert replies into message data format
+        if (repliesMap.size > 0) {
+          for (const [leadId, replyData] of repliesMap.entries()) {
+            messageDataMap.set(leadId, {
+              messageText: null,  // Not available from bulk fetch
+              replyText: replyData.reply,
+              replyCategory: null,
+              repliedAt: new Date(replyData.dateAdded)
+            });
           }
+          logger.info(`   ✅ Using bulk-fetched replies: ${messageDataMap.size} with reply data`);
         }
 
         for (const stat of stats) {
