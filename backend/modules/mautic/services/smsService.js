@@ -1,62 +1,213 @@
 import prisma from '../../../prisma/client.js';
 import logger from '../../../utils/logger.js';
+import campaignGrouping from './campaignGrouping.js';
 
 class SmsService {
   /**
-   * Categorize SMS campaigns based on first-word matching with Mautic client names
+   * ✅ DETERMINISTIC GROUPING: Only group NEW campaigns, preserve REAL client assignments
+   * ⚠️  RE-EVALUATES campaigns assigned to SMS-only clients (IPS, BPC) for better matching
+   * Checks database for existing SMS campaign assignments and reuses them selectively
+   * This ensures consistent grouping while allowing improvements from better matching
    * @param {Array} smsCampaigns - Array of SMS campaigns from Mautic
    * @param {Array} mauticClients - Array of all Mautic clients (EXCLUDING sms-only clients)
-   * @returns {Object} Categorized SMS campaigns
+   * @returns {Promise<Object>} Categorized SMS campaigns with preserved assignments
    */
-  categorizeSms(smsCampaigns, mauticClients) {
+  async categorizeSmsWithPersistence(smsCampaigns, mauticClients) {
     const categorized = {
-      matched: [], // SMS with first-word match to client (e.g., "JAE Distro SMS 1" matches "JAE Automation")
-      unmatched: [] // SMS without first-word match (goes to SMS Clients)
+      matched: [],   // SMS matched to Mautic clients
+      unmatched: []  // SMS that couldn't be matched (will create/use SMS-only client)
     };
 
     // Filter out sms-only clients from matching to avoid conflicts
     const regularClients = mauticClients.filter(client => client.reportId !== 'sms-only');
-    
-    // Build a map of client first words to client data
-    const clientFirstWordMap = new Map();
-    for (const client of regularClients) {
-      const firstWord = client.name.split(/[\s_\-:]+/)[0].toLowerCase(); // Extract first word
-      if (!clientFirstWordMap.has(firstWord)) {
-        clientFirstWordMap.set(firstWord, { id: client.id, name: client.name });
-      }
+
+    if (regularClients.length === 0 || smsCampaigns.length === 0) {
+      logger.warn('⚠️  No regular Mautic clients or SMS campaigns to categorize');
+      categorized.unmatched = smsCampaigns;
+      return categorized;
     }
 
-    for (const sms of smsCampaigns) {
-      const smsName = sms.name;
-      const smsFirstWord = smsName.split(/[\s_\-:]+/)[0].toLowerCase(); // Extract first word from SMS name
-      let matched = false;
+    logger.info(`🔄 Categorizing ${smsCampaigns.length} SMS campaigns with persistence...`);
 
-      // Check if SMS first word matches any client's first word (case-insensitive)
-      // Examples: "JAE Distro SMS 1" matches "JAE Automation", "S4_Campaign" matches "S4: Something"
-      if (clientFirstWordMap.has(smsFirstWord)) {
-        const clientData = clientFirstWordMap.get(smsFirstWord);
+    // STEP 1: Check which campaigns already exist in database + their client assignments
+    const existingCampaigns = await prisma.mauticSms.findMany({
+      where: {
+        mauticId: { in: smsCampaigns.map(s => s.id) }
+      },
+      select: { 
+        mauticId: true, 
+        clientId: true, 
+        name: true,
+        client: {
+          select: { reportId: true, name: true }  // Check if client is sms-only
+        }
+      }
+    });
+
+    // STEP 2: Separate existing campaigns into preserved and re-evaluate groups
+    const preservedMap = new Map();      // Real Mautic client assignments (keep stable)
+    const reevaluateMap = new Map();     // SMS-only assignments (allow re-grouping) + invalid assignments
+
+    for (const existing of existingCampaigns) {
+      if (existing.client?.reportId === 'sms-only') {
+        // Previously assigned to SMS-only client - can be re-evaluated
+        reevaluateMap.set(existing.mauticId, { clientId: existing.clientId, name: existing.name, clientName: existing.client.name });
+        logger.info(`   🔄 Will re-evaluate "${existing.name}" (currently assigned to SMS-only "${existing.client.name}")`);
+      } else if (existing.clientId && existing.client) {
+        // Assigned to real Mautic client - validate it still matches with current logic
+        const campaign = smsCampaigns.find(c => c.id === existing.mauticId);
+        if (campaign) {
+          const stillMatches = campaignGrouping.isClientMatch(existing.client.name, campaign.name).match;
+          
+          if (stillMatches) {
+            // Still matches - preserve this assignment
+            preservedMap.set(existing.mauticId, { clientId: existing.clientId, name: existing.name, clientName: existing.client.name });
+            logger.info(`   ♻️  Will preserve "${existing.name}" (still matches "${existing.client.name}")`);
+          } else {
+            // No longer matches - re-evaluate this campaign
+            reevaluateMap.set(existing.mauticId, { clientId: existing.clientId, name: existing.name, clientName: existing.client.name });
+            logger.info(`   🔄 Will re-evaluate "${existing.name}" (no longer matches "${existing.client.name}")`);
+          }
+        }
+      }
+    }
+    
+    logger.info(`   📊 Found: ${preservedMap.size} to preserve, ${reevaluateMap.size} to re-evaluate, ${smsCampaigns.length - preservedMap.size - reevaluateMap.size} new`);
+    
+    // STEP 3: Split campaigns into evaluation groups
+    const newCampaigns = smsCampaigns.filter(s => !preservedMap.has(s.id) && !reevaluateMap.has(s.id));
+    const reevaluateCampaigns = smsCampaigns.filter(s => reevaluateMap.has(s.id));
+
+    logger.info(`   ✨ New: ${newCampaigns.length}, Re-evaluate: ${reevaluateCampaigns.length}, Preserved: ${preservedMap.size}`);
+
+    // STEP 4: Apply grouping to NEW campaigns + RE-EVALUATE campaigns
+    let groupMap = new Map();
+    const campaignsToEvaluate = [...newCampaigns, ...reevaluateCampaigns];
+    if (campaignsToEvaluate.length > 0) {
+      groupMap = campaignGrouping.groupCampaigns(regularClients, campaignsToEvaluate);
+      logger.info(`   🎯 Grouping applied to ${campaignsToEvaluate.length} campaigns (${newCampaigns.length} new + ${reevaluateCampaigns.length} re-evaluated)`);
+    }
+
+    // STEP 5: Build assignment map combining new grouping + preserved assignments
+    const assignmentMap = new Map();
+    
+    // Add new campaign assignments (fresh grouping)
+    for (const [clientId, campaignIds] of groupMap.entries()) {
+      campaignIds.forEach(campaignId => {
+        assignmentMap.set(campaignId, clientId);
+      });
+    }
+
+    // Add preserved campaign assignments (STABLE - no changes)
+    for (const [mauticId, { clientId }] of preservedMap.entries()) {
+      assignmentMap.set(mauticId, clientId);
+    }
+
+    // STEP 6: Categorize all SMS based on assignments
+    let newlyMatched = 0;
+    for (const sms of smsCampaigns) {
+      const assignedClientId = assignmentMap.get(sms.id);
+
+      if (assignedClientId) {
+        // Find matching client
+        const client = regularClients.find(c => c.id === assignedClientId);
         categorized.matched.push({
           ...sms,
-          clientId: clientData.id,
-          clientName: clientData.name
+          clientId: assignedClientId,
+          clientName: client?.name
         });
-        matched = true;
-        logger.info(`✅ Matched SMS "${smsName}" to client "${clientData.name}" (first word "${smsFirstWord}" matches)`);
-      }
-
-      if (!matched) {
+        
+        // Log assignment status
+        if (preservedMap.has(sms.id)) {
+          logger.info(`   ♻️  SMS "${sms.name}" → Client "${client?.name}" (PRESERVED)`);
+        } else if (reevaluateMap.has(sms.id)) {
+          const oldClient = reevaluateMap.get(sms.id).clientName;
+          if (assignedClientId === reevaluateMap.get(sms.id).clientId) {
+            logger.info(`   ↩️  SMS "${sms.name}" → Client "${client?.name}" (unchanged on re-eval)`);
+          } else {
+            logger.info(`   ✅ SMS "${sms.name}" → Client "${client?.name}" (re-grouped from "${oldClient}")`);
+            newlyMatched++;
+          }
+        } else {
+          logger.info(`   ✨ SMS "${sms.name}" → Client "${client?.name}" (NEW)`);
+        }
+      } else {
+        // No match found - will be SMS-only
         categorized.unmatched.push(sms);
-        logger.info(`❌ No client match for SMS "${smsName}" (first word "${smsFirstWord}" has no matching client)`);
+        if (reevaluateMap.has(sms.id)) {
+          const oldClient = reevaluateMap.get(sms.id).clientName;
+          logger.info(`   ❌ SMS "${sms.name}" → SMS-only (moved from "${oldClient}")`);
+        } else {
+          logger.info(`   ❌ SMS "${sms.name}" → SMS-only (no match)`);
+        }
       }
     }
 
-    logger.info(`Categorization complete: ${categorized.matched.length} matched, ${categorized.unmatched.length} unmatched`);
+    logger.info(`✅ Categorization complete: matched=${categorized.matched.length}, unmatched=${categorized.unmatched.length}, regrouped=${newlyMatched}`);
+
+    return categorized;
+  }
+
+  /**
+   * Keep legacy method for backwards compatibility
+   */
+  categorizeSms(smsCampaigns, mauticClients) {
+    const categorized = {
+      matched: [],   // SMS matched to Mautic clients
+      unmatched: []  // SMS that couldn't be matched (will create/use SMS-only client)
+    };
+
+    // Filter out sms-only clients from matching to avoid conflicts
+    const regularClients = mauticClients.filter(client => client.reportId !== 'sms-only');
+
+    if (regularClients.length === 0 || smsCampaigns.length === 0) {
+      logger.warn('⚠️  No regular Mautic clients or SMS campaigns to categorize');
+      categorized.unmatched = smsCampaigns;
+      return categorized;
+    }
+
+    logger.info(`🔄 Categorizing ${smsCampaigns.length} SMS campaigns...`);
+
+    // Use campaignGrouping service to get intelligent grouping
+    const groupMap = campaignGrouping.groupCampaigns(regularClients, smsCampaigns);
+
+    // Build assignment map for easy lookup
+    const assignmentMap = new Map();
+    for (const [clientId, campaignIds] of groupMap.entries()) {
+      campaignIds.forEach(campaignId => {
+        assignmentMap.set(campaignId, clientId);
+      });
+    }
+
+    // Categorize SMS based on assignments
+    for (const sms of smsCampaigns) {
+      const assignedClientId = assignmentMap.get(sms.id);
+
+      if (assignedClientId) {
+        // Find matching client
+        const client = regularClients.find(c => c.id === assignedClientId);
+        categorized.matched.push({
+          ...sms,
+          clientId: assignedClientId,
+          clientName: client?.name
+        });
+        logger.info(`✅ SMS "${sms.name}" → Client "${client?.name}"`);
+      } else {
+        // No match found
+        categorized.unmatched.push(sms);
+        logger.info(`❌ SMS "${sms.name}" → SMS-only (no match)`);
+      }
+    }
+
+    logger.info(`✅ Categorization complete: ${categorized.matched.length} matched, ${categorized.unmatched.length} unmatched`);
+
     return categorized;
   }
 
   /**
    * Store SMS campaigns from an SMS client with automatic Mautic client creation
    * Matched SMS go to existing Mautic clients, unmatched SMS auto-create a new Mautic client
+   * ✅ USES PERSISTENCE: Re-evaluates existing campaigns to catch new matches
    * ✅ TRACKS ORIGIN: Sets originMauticUrl and originUsername to track which credentials fetched each campaign
    * @param {Object} smsClient - SMS Client object (needs name, mauticUrl, username, password)
    * @param {Array} smsCampaigns - Array of SMS campaigns
@@ -65,9 +216,14 @@ class SmsService {
    */
   async storeSmsWithAutoClient(smsClient, smsCampaigns, mauticClients = []) {
     try {
-      logger.info(`Storing ${smsCampaigns.length} SMS campaigns for SMS client ${smsClient.name}`);
+      logger.info(`🔄 Storing ${smsCampaigns.length} SMS campaigns for SMS client ${smsClient.name}`);
       
-      const categorized = this.categorizeSms(smsCampaigns, mauticClients);
+      // ✅ Use persistence-aware categorization so fresh matches are detected
+      // This allows campaigns to be re-grouped if matching logic improves or Mautic clients are added
+      const categorized = mauticClients.length > 0 
+        ? await this.categorizeSmsWithPersistence(smsCampaigns, mauticClients)
+        : this.categorizeSms(smsCampaigns, mauticClients);  // Fallback if no Mautic clients provided
+      
       let created = 0, updated = 0;
       let autoCreatedClient = null;
 
@@ -187,7 +343,7 @@ class SmsService {
       // ✅ Get the Mautic client to extract origin credentials
       const mauticClient = await prisma.mauticClient.findUnique({
         where: { id: mauticClientId },
-        select: { mauticUrl: true, username: true }
+        select: { mauticUrl: true, username: true, reportId: true }
       });
 
       if (!mauticClient) {
@@ -198,105 +354,122 @@ class SmsService {
       const normalizedOriginUrl = mauticClient.mauticUrl.trim().replace(/\/$/, '').toLowerCase();
       const originUsername = mauticClient.username.trim();
       
+      // ✅ KEY: Track if source is SMS-only client (to preserve credentials for contact activity fetch)
+      const isSourceSmsClt = mauticClient.reportId === 'sms-only';
+      
       let created = 0, updated = 0;
-      let preservedClientAssignments = 0;
+      let preserved = 0;
       let categorized = 0;
 
-      // Build a map of client first words for categorization (excluding sms-only clients)
-      const regularClients = mauticClients.filter(client => !client.reportId || client.reportId !== 'sms-only');
-      const clientFirstWordMap = new Map();
-      for (const client of regularClients) {
-        const firstWord = client.name.split(/[\s_\-:]+/)[0].toLowerCase(); // Extract first word
-        if (!clientFirstWordMap.has(firstWord)) {
-          clientFirstWordMap.set(firstWord, { id: client.id, name: client.name });
-        }
-      }
+      // ✅ Use persistence-aware categorization to ensure consistent grouping across syncs
+      const categorizedSms = await this.categorizeSmsWithPersistence(smsCampaigns, mauticClients);
+      
+      logger.info(`✅ Categorization complete: ${categorizedSms.matched.length} matched, ${categorizedSms.unmatched.length} unmatched`);
 
-      // Store all SMS, but preserve existing clientId if already assigned
-      // Also perform smart categorization based on first-word matching
-      for (const sms of smsCampaigns) {
-        // Check if SMS already exists in database
+      // Process matched campaigns (assign to Mautic clients)
+      for (const sms of categorizedSms.matched) {
         const existing = await prisma.mauticSms.findUnique({
           where: { mauticId: sms.id }
         });
 
-        let updateData = {
+        const updateData = {
           name: sms.name,
           category: sms.category,
           sentCount: sms.sentCount || 0,
-          // ✅ Always update origin tracking (in case credentials changed)
+          clientId: sms.clientId,  // ✅ Use categorized client assignment
+          // ✅ CRITICAL FIX: Preserve SMS client ID if source is SMS-only client
+          // This allows contact activity fetch to use correct credentials even when campaign is grouped under Mautic client
+          smsClientId: isSourceSmsClt ? mauticClientId : null,
           originMauticUrl: normalizedOriginUrl,
           originUsername: originUsername,
           updatedAt: new Date()
         };
 
-        // If SMS already exists with a clientId assignment, preserve it
-        // This respects the categorization from the SMS sync
-        if (existing && existing.clientId) {
-          logger.info(`✅ Preserving existing client assignment for SMS "${sms.name}" (mauticId: ${sms.id}) - already assigned to clientId ${existing.clientId}`);
-          preservedClientAssignments++;
-          // Update metadata only, preserve clientId
+        if (existing) {
+          // Check if assignment is being preserved (no change needed)
+          if (existing.clientId === sms.clientId) {
+            preserved++;
+            logger.info(`♻️  Preserving SMS "${sms.name}" under client "${sms.clientName}"`);
+          } else {
+            // Assignment changed (rare case)
+            logger.info(`🔄 Reassigning SMS "${sms.name}" from clientId ${existing.clientId} to "${sms.clientName}"`);
+            categorized++;
+          }
+
           await prisma.mauticSms.update({
             where: { mauticId: sms.id },
             data: updateData
           });
           updated++;
-          continue;
-        }
-
-        // For new SMS or SMS without clientId, try to categorize based on first-word matching
-        let targetClientId = mauticClientId; // Default to originating client
-        const smsFirstWord = sms.name.split(/[\s_\-:]+/)[0].toLowerCase(); // Extract first word from SMS name
-        
-        // Check if SMS first word matches any known client's first word
-        if (clientFirstWordMap.has(smsFirstWord)) {
-          const clientData = clientFirstWordMap.get(smsFirstWord);
-          targetClientId = clientData.id;
-          categorized++;
-          logger.info(`✅ Categorized SMS "${sms.name}" to client "${clientData.name}" (first word "${smsFirstWord}" matches)`);
-        }
-
-        updateData.clientId = targetClientId;
-        updateData.smsClientId = null;
-
-        const result = await prisma.mauticSms.upsert({
-          where: { mauticId: sms.id },
-          update: updateData,
-          create: {
-            mauticId: sms.id,
-            name: sms.name,
-            category: sms.category,
-            sentCount: sms.sentCount || 0,
-            clientId: targetClientId,
-            smsClientId: null,
-            // ✅ Set origin tracking on create
-            originMauticUrl: normalizedOriginUrl,
-            originUsername: originUsername
-          }
-        });
-        
-        const wasCreated = result.createdAt.getTime() === result.updatedAt.getTime();
-        if (wasCreated) {
-          created++;
-          const sourceMsg = targetClientId === mauticClientId ? `originating Mautic client ${mauticClientId}` : `matched client ${targetClientId}`;
-          logger.info(`✨ Created new SMS "${sms.name}" (mauticId: ${sms.id}) under ${sourceMsg}`);
         } else {
-          updated++;
-          logger.info(`🔄 Updated SMS "${sms.name}" (mauticId: ${sms.id})`);
+          // New SMS campaign
+          await prisma.mauticSms.create({
+            data: {
+              mauticId: sms.id,
+              ...updateData
+            }
+          });
+          created++;
+          categorized++;
+          logger.info(`✨ Created SMS "${sms.name}" under client "${sms.clientName}"`);
         }
       }
 
-      logger.info(`✅ SMS storage complete for Mautic client ${mauticClientId}: ${created} created, ${updated} updated, ${preservedClientAssignments} preserved from SMS sync, ${categorized} categorized by name`);
-      logger.info(`  - Origin tracked: ${normalizedOriginUrl} / ${originUsername}`);
+      // Process unmatched campaigns (SMS-only)
+      for (const sms of categorizedSms.unmatched) {
+        const existing = await prisma.mauticSms.findUnique({
+          where: { mauticId: sms.id }
+        });
+
+        const updateData = {
+          name: sms.name,
+          category: sms.category,
+          sentCount: sms.sentCount || 0,
+          clientId: null,  // ✅ No Mautic client match
+          smsClientId: mauticClientId,
+          originMauticUrl: normalizedOriginUrl,
+          originUsername: originUsername,
+          updatedAt: new Date()
+        };
+
+        if (existing) {
+          if (!existing.clientId && existing.smsClientId === mauticClientId) {
+            preserved++;
+            logger.info(`♻️  Preserving SMS "${sms.name}" as SMS-only under original SMS client`);
+          } else {
+            logger.info(`🔄 Reassigning SMS "${sms.name}" to SMS-only (no Mautic match)`);
+          }
+
+          await prisma.mauticSms.update({
+            where: { mauticId: sms.id },
+            data: updateData
+          });
+          updated++;
+        } else {
+          // New unmatched SMS
+          await prisma.mauticSms.create({
+            data: {
+              mauticId: sms.id,
+              ...updateData
+            }
+          });
+          created++;
+          logger.info(`✨ Created SMS "${sms.name}" as SMS-only (no Mautic match)`);
+        }
+      }
+
+      logger.info(`✅ SMS storage complete: ${created} created, ${updated} updated`);
+      logger.info(`   Preserved: ${preserved}, Categorized: ${categorized}`);
+      logger.info(`   Origin: ${normalizedOriginUrl} / ${originUsername}`);
 
       return { 
         created, 
         updated, 
         total: created + updated,
-        preserved: preservedClientAssignments,
+        preserved: preserved,
         categorized: categorized,
-        matchedCount: smsCampaigns.length,
-        unmatchedCount: 0
+        matchedCount: categorizedSms.matched.length,
+        unmatchedCount: categorizedSms.unmatched.length
       };
     } catch (error) {
       logger.error('Failed to store SMS campaigns for Mautic client:', { error: error.message });
@@ -424,6 +597,8 @@ class SmsService {
         }
 
         let created = 0, skipped = 0, errors = 0;
+        let createdWithReplies = 0;  // Track how many have replies
+        let createdWithoutReplies = 0;
 
         // Log sample stat for debugging
         logger.info(`   Sample stat: ${JSON.stringify(stats[0])}`);
@@ -433,6 +608,8 @@ class SmsService {
           return stat.lead_id || stat.leadId || stat.contact_id || stat.contactId;
         }).filter(Boolean))];
 
+        logger.info(`   📝 Processing ${stats.length} stats for ${leadIds.length} unique leads`);
+        logger.info(`   � Processing ${stats.length} stats for ${leadIds.length} unique leads`);
         logger.info(`   📱 Fetching mobile numbers in BULK (parallel)...`);
 
         // Get client credentials for fetching mobile numbers and messages
@@ -451,17 +628,33 @@ class SmsService {
             const mauticAPI = (await import('./mauticAPI.js')).default;
             
             // ✅ Use NEW BULK fetch for mobiles (parallel - 50 concurrent)
-            mobileMap = await mauticAPI.fetchMobileNumbersBulk(client, leadIds);
-            logger.info(`   ✅ Bulk fetched mobiles: ${mobileMap.size} found`);
+            try {
+              mobileMap = await mauticAPI.fetchMobileNumbersBulk(client, leadIds);
+              logger.info(`   ✅ Bulk fetched mobiles: ${mobileMap.size} found / ${leadIds.length} leads`);
+            } catch (mobileErr) {
+              logger.warn(`   ⚠️  Failed to fetch mobiles: ${mobileErr.message}`);
+              mobileMap = new Map();
+            }
             
             // ✅ Use NEW BULK fetch for replies (parallel - 50 concurrent)
-            repliesMap = await mauticAPI.fetchSmsRepliesBulk(client, leadIds);
-            logger.info(`   ✅ Bulk fetched replies: ${repliesMap.size} found`);
+            try {
+              repliesMap = await mauticAPI.fetchSmsRepliesBulk(client, leadIds);
+              logger.info(`   ✅ Bulk fetched replies: ${repliesMap.size} found / ${leadIds.length} leads`);
+              
+              // DEBUG: Log if repliesMap is empty
+              if (repliesMap.size === 0 && leadIds.length > 0) {
+                logger.warn(`   ⚠️  WARNING: No replies found for any of the ${leadIds.length} leads!`);
+                logger.info(`   ℹ️  Sample lead IDs: ${leadIds.slice(0, 5).join(', ')}`);
+              }
+            } catch (repliesErr) {
+              logger.warn(`   ⚠️  Failed to fetch replies: ${repliesErr.message}`);
+              repliesMap = new Map();
+            }
           } else {
             logger.warn(`   ⚠️  Could not fetch data - client not found`);
           }
         } catch (mobileError) {
-          logger.warn(`   ⚠️  Failed to fetch bulk data: ${mobileError.message}`);
+          logger.warn(`   ⚠️  Failed to initialize bulk fetch: ${mobileError.message}`);
           // Continue without mobiles/replies - they can be fetched later
         }
 
@@ -471,14 +664,24 @@ class SmsService {
         // Convert replies into message data format
         if (repliesMap.size > 0) {
           for (const [leadId, replyData] of repliesMap.entries()) {
+            // ✅ FIX: Categorize reply as "Stop" or "Other"
+            const replyText = replyData.reply || '';
+            const replyCategory = replyText.toUpperCase().includes('STOP') ? 'Stop' : 'Other';
+            
             messageDataMap.set(leadId, {
               messageText: null,  // Not available from bulk fetch
-              replyText: replyData.reply,
-              replyCategory: null,
+              replyText: replyText,
+              replyCategory: replyCategory,  // ✅ Now categorized!
               repliedAt: new Date(replyData.dateAdded)
             });
           }
-          logger.info(`   ✅ Using bulk-fetched replies: ${messageDataMap.size} with reply data`);
+          logger.info(`   ✅ Using bulk-fetched replies: ${messageDataMap.size} with reply data (categorized as Stop/Other)`);
+        } else {
+          logger.warn(`   ⚠️  IMPORTANT: No replies fetched - replies will be null in database!`);
+          logger.warn(`   ℹ️  This could happen if:`);
+          logger.warn(`       1. Bulk fetch for replies failed (check network errors above)`);
+          logger.warn(`       2. Mautic has no SMS replies yet`);
+          logger.warn(`       3. Lead event log endpoint is not accessible`);
         }
 
         for (const stat of stats) {
@@ -527,22 +730,41 @@ class SmsService {
                 }
               });
               created++;
+              
+              // Track if created with replies
+              if (messageData.replyText) {
+                createdWithReplies++;
+              } else {
+                createdWithoutReplies++;
+              }
 
               // Log first few creates for verification
               if (created <= 3) {
-                logger.info(`   ✅ Created stat: leadId=${leadId}, mobile=${mobile || 'N/A'}, hasMessage=${!!messageData.messageText}, hasReply=${!!messageData.replyText}`);
+                logger.info(`   ✅ Created stat: leadId=${leadId}, mobile=${mobile || 'N/A'}, reply=${messageData.replyText ? `"${messageData.replyText.substring(0, 30)}..."` : 'N/A'}, category=${messageData.replyCategory || 'N/A'}`);
               }
             } else {
               // Update existing record with new data if available
               const updateData = {};
               if (mobile && !existing.mobile) updateData.mobile = mobile;
               
-              // Always update message/reply data if we fetched it (even if existing has data)
+              // ✅ Update message/reply data if we fetched it
+              // IMPORTANT: Also update records with NULL replies to fill in missing data
               if (messageData.messageText) updateData.messageText = messageData.messageText;
+              
               if (messageData.replyText) {
+                // Existing has no reply, but we found one → update it!
+                if (!existing.replyText || existing.replyText === null) {
+                  logger.info(`   🔄 Found reply for record with NULL reply: leadId=${parseInt(leadId)} → "${messageData.replyText.substring(0, 50)}..."`);
+                }
                 updateData.replyText = messageData.replyText;
                 updateData.replyCategory = messageData.replyCategory;
                 updateData.repliedAt = messageData.repliedAt;
+              } else if (!existing.replyText && messageData.replyText === null) {
+                // ✅ NEW: Update NULL fields with explicit NULL values for consistency
+                // This ensures that records checked for replies get marked as checked
+                if (!existing.lastSyncedAt) {
+                  updateData.lastSyncedAt = new Date();  // Mark as checked during this sync
+                }
               }
               
               if (Object.keys(updateData).length > 0) {
@@ -564,6 +786,15 @@ class SmsService {
         }
 
         logger.info(`✅ SMS stats stored: ${created} created, ${skipped} skipped, ${errors} errors`);
+        
+        // DEBUG: Show reply breakdown
+        if (created > 0) {
+          logger.info(`   📊 Created breakdown: ${createdWithReplies} with replies, ${createdWithoutReplies} without replies`);
+          if (createdWithoutReplies > 0) {
+            logger.warn(`   ⚠️  ${createdWithoutReplies} records have NO replies - check if bulk fetch succeeded`);
+          }
+        }
+        
         return { created, skipped, errors, total: created + skipped };
       } catch (error) {
         logger.error('❌ Failed to store SMS stats:', { error: error.message, stack: error.stack });

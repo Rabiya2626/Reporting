@@ -2052,15 +2052,27 @@ router.get("/contact/:id", async (req, res) => {
     // Find which client owns this smsId
     const smsCampaign = await prisma.mauticSms.findUnique({
       where: { mauticId: parseInt(smsId) },
-      include: { client: true }
+      include: { 
+        client: true,           // Grouped Mautic client (e.g., Century)
+        smsClient: true         // Original SMS client that fetched this campaign
+      }
     });
 
-    if (!smsCampaign || !smsCampaign.client) {
-      return res.status(404).json({ error: "SMS campaign or client not found" });
+    if (!smsCampaign) {
+      return res.status(404).json({ error: "SMS campaign not found" });
     }
 
-    // Create mautic client instance using that client's credentials
-    const apiClient = mauticAPI.createClient(smsCampaign.client);
+    // ✅ KEY FIX: Use the ORIGINAL SMS client credentials if available
+    // SMS campaigns fetched from IPS but grouped under Century still need IPS credentials to fetch contact activity
+    // because the contact ONLY exists in IPS's Mautic instance, not Century's
+    const authenticatedClient = smsCampaign.smsClient || smsCampaign.client;
+    
+    if (!authenticatedClient) {
+      return res.status(404).json({ error: "No credentials found for SMS campaign's original source client" });
+    }
+
+    // Create mautic client instance using ORIGINAL client's credentials (SMS client if available, else grouped client)
+    const apiClient = mauticAPI.createClient(authenticatedClient);
 
     // Fetch contact details + activity from Mautic
     const [activityRes, contactRes] = await Promise.all([
@@ -2071,7 +2083,7 @@ router.get("/contact/:id", async (req, res) => {
     const contact = contactRes.data?.contact || {};
     const events = activityRes.data?.events || [];
 
-    // Filter events
+    // Filter events - only SMS sends and replies relevant to this campaign
     const filteredEvents = events.filter(
       e =>
         (e.event === "sms.sent" && e.details?.stat?.sms_id?.toString() === smsCampaign.mauticId.toString()) ||
@@ -2079,7 +2091,6 @@ router.get("/contact/:id", async (req, res) => {
     );
 
     const name = `${contact.fields?.core?.firstname?.value || ""} ${contact.fields?.core?.lastname?.value || ""}`.trim();
-    
     const mobile = contact.fields?.core?.mobile?.value || "";
 
     res.json({

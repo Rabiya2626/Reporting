@@ -142,7 +142,8 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
                 `${baseUrl}/api/mautic/contact/${leadId}`,
                 { params: { smsId: selectedCampaign.mauticId } }
             );
-
+            console.log("res", response);
+            
 
             // Update states once data arrives
             setSelectedLead(leadId);
@@ -176,14 +177,16 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
     };
 
     useEffect(() => {
-        if (!selectedClient?.mauticApiId) return;
+        // Use mauticApiId for regular Mautic clients, id for SMS-only clients
+        const clientId = selectedClient?.mauticApiId || selectedClient?.id;
+        if (!clientId) return;
 
         const fetchSmsCampaigns = async () => {
             try {
                 setLoading(true);
                 setError(null);
                 const baseUrl = import.meta.env.VITE_API_URL || "";
-                const response = await axios.get(`${baseUrl}/api/mautic/clients/${selectedClient.mauticApiId}/sms`);
+                const response = await axios.get(`${baseUrl}/api/mautic/clients/${clientId}/sms`);
                 setSmsCampaigns(response.data.data || []);
             } catch (err) {
                 console.error('Error fetching SMS campaigns:', err);
@@ -194,7 +197,7 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
         };
 
         fetchSmsCampaigns();
-    }, [selectedClient?.mauticApiId]);
+    }, [selectedClient?.mauticApiId, selectedClient?.id]);
 
     // Auto-refresh when syncing is in progress
     useEffect(() => {

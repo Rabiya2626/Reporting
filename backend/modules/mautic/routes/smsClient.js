@@ -738,20 +738,18 @@ router.get('/sms-campaigns/:smsId/messages', async (req, res) => {
           ]
         };
       } else if (replyFilter === 'Other') {
-        // Show replies with Other category OR replies with text that don't contain 'STOP'
+        // Show replies that:
+        // 1. Have replyCategory = 'Other', OR
+        // 2. Have NULL category AND replyText doesn't contain 'STOP'
         whereClause = {
           smsId: smsCampaign.id,
-          AND: [
-            { replyText: { not: null } },
+          replyText: { not: null },  // Must have a reply
+          OR: [
+            { replyCategory: 'Other' },
             { 
-              OR: [
-                { replyCategory: 'Other' },
-                { 
-                  AND: [
-                    { replyCategory: { equals: null } },
-                    { replyText: { not: { contains: 'STOP' } } }
-                  ]
-                }
+              AND: [
+                { replyCategory: null },
+                { replyText: { not: { contains: 'STOP' } } }
               ]
             }
           ]
@@ -763,13 +761,6 @@ router.get('/sms-campaigns/:smsId/messages', async (req, res) => {
     const total = await prisma.mauticSmsStat.count({
       where: whereClause
     });
-
-    // Get campaign-level stats (NOT just current page)
-    // const campaignStats = await prisma.mauticSmsStat.groupBy({
-    //   by: [],
-    //   where: { smsId: smsCampaign.id },
-    //   _count: true
-    // });
 
     const totalWithReplies = await prisma.mauticSmsStat.count({
       where: { 
