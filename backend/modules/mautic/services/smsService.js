@@ -578,6 +578,72 @@ class SmsService {
   }
 
   /**
+   * Store pre-transformed SMS statistics directly
+   * This method expects data already in DB format with mobile/replies included
+   * @param {Array} transformedStats - Array of pre-transformed stats ready for DB insertion
+   * @returns {Promise<Object>} Store results
+   */
+  async storeTransformedSmsStats(transformedStats) {
+    try {
+      if (!Array.isArray(transformedStats) || transformedStats.length === 0) {
+        logger.warn(`⚠️  No transformed stats to store`);
+        return { created: 0, skipped: 0, total: 0 };
+      }
+
+      logger.info(`📥 Storing ${transformedStats.length} pre-transformed SMS stats...`);
+      
+      let created = 0, skipped = 0;
+
+      for (const stat of transformedStats) {
+        try {
+          // Check if already exists
+          const existing = await prisma.mauticSmsStat.findUnique({
+            where: {
+              mauticSmsId_leadId: {
+                mauticSmsId: stat.mauticSmsId,
+                leadId: stat.leadId
+              }
+            }
+          });
+
+          if (!existing) {
+            await prisma.mauticSmsStat.create({
+              data: stat
+            });
+            created++;
+          } else {
+            // Update if we have new data
+            const updateData = {};
+            if (stat.mobile && !existing.mobile) updateData.mobile = stat.mobile;
+            if (stat.replyText && !existing.replyText) {
+              updateData.replyText = stat.replyText;
+              updateData.replyCategory = stat.replyCategory;
+              updateData.repliedAt = stat.repliedAt;
+            }
+            
+            if (Object.keys(updateData).length > 0) {
+              await prisma.mauticSmsStat.update({
+                where: { id: existing.id },
+                data: updateData
+              });
+            }
+            skipped++;
+          }
+        } catch (statError) {
+          logger.error(`   ❌ Error storing stat:`, statError.message);
+        }
+      }
+
+      logger.info(`✅ Stored: ${created} created, ${skipped} skipped`);
+      return { created, skipped, total: created + skipped };
+
+    } catch (error) {
+      logger.error('❌ Failed to store transformed SMS stats:', error.message);
+      return { created: 0, skipped: 0, total: 0, error: error.message };
+    }
+  }
+
+  /**
    * Store SMS statistics
    * @param {Int} smsId - Local SMS ID (from MauticSms table)
    * @param {Int} mauticSmsId - Original Mautic SMS campaign ID

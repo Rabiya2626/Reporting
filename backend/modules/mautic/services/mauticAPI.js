@@ -1345,101 +1345,102 @@ class MauticAPIService {
         // ✅ Fetch and store SMS stats for each campaign with BACKFILL
         // This is INDEPENDENT from SMS campaign save - runs even if save failed
         if (smsCampaigns && smsCampaigns.length > 0) {
-          try {
-            console.log(`📊 Fetching SMS stats for ${smsCampaigns.length} campaigns...`);
+          console.log(`\n📊 Fetching SMS stats for ${smsCampaigns.length} campaigns...`);
+          
+          // Create backfill storage
+          const backfillDir = path.join(__dirname, '..', '..', '.temp_pages', 'sms-stats-backfill');
+          if (!fs.existsSync(backfillDir)) {
+            fs.mkdirSync(backfillDir, { recursive: true });
+          }
+          
+          const backfillFile = path.join(backfillDir, `sms-${client.id}-${Date.now()}.json`);
+          const backfillData = {
+            clientId: client.id,
+            clientName: client.name,
+            isSmsOnly: true,
+            startTime: new Date().toISOString(),
+            campaigns: {}
+          };
+
+          let totalStatsCreated = 0;
+          let totalStatsSkipped = 0;
+          let successfulCampaigns = [];
+
+          // 🎯 PRIORITY: Fetch automation client SMS campaigns first
+          const automationSmsCampaigns = [];
+          const smsOnlySmsCampaigns = [];
+          
+          for (const sms of smsCampaigns) {
+            const localSms = await prisma.mauticSms.findUnique({
+              where: { mauticId: sms.id },
+              select: { id: true, clientId: true, name: true }
+            });
             
-            // Create backfill storage
-            const backfillDir = path.join(__dirname, '..', '..', '.temp_pages', 'sms-stats-backfill');
-            if (!fs.existsSync(backfillDir)) {
-              fs.mkdirSync(backfillDir, { recursive: true });
-            }
-            
-            const backfillFile = path.join(backfillDir, `sms-stats-${client.id}-${Date.now()}.json`);
-            const backfillData = {
-              clientId: client.id,
-              clientName: client.name,
-              isSmsOnly: true,
-              startTime: new Date().toISOString(),
-              campaigns: {}
-            };
-
-            let totalStatsCreated = 0;
-            let totalStatsSkipped = 0;
-            let failedCampaigns = [];
-            let successfulCampaigns = [];
-
-            // Process each SMS campaign sequentially
-            for (let idx = 0; idx < smsCampaigns.length; idx++) {
-              const sms = smsCampaigns[idx];
-              try {
-                // Find the local SMS record
-                const localSms = await prisma.mauticSms.findUnique({
-                  where: { mauticId: sms.id }
-                });
-
-                if (!localSms) {
-                  console.warn(`   ⚠️  Campaign not in DB: "${sms.name}" (ID: ${sms.id})`);
-                  failedCampaigns.push({ name: sms.name, id: sms.id, reason: 'not_in_db' });
-                  continue;
-                }
-
-                const progress = `[${idx + 1}/${smsCampaigns.length}]`;
-                console.log(`   ${progress} 📊 Fetching stats for "${sms.name}"...`);
-                
-                const statsResult = await this.fetchAndStoreSmsStats(client, localSms.id, sms.id);
-                
-                // Backfill
-                backfillData.campaigns[sms.id] = {
-                  name: sms.name,
-                  localId: localSms.id,
-                  created: statsResult.created || 0,
-                  skipped: statsResult.skipped || 0,
-                  timestamp: new Date().toISOString(),
-                  status: 'success'
-                };
-
-                totalStatsCreated += statsResult.created || 0;
-                totalStatsSkipped += statsResult.skipped || 0;
-                successfulCampaigns.push(sms.name);
-                console.log(`       ✅ Created: ${statsResult.created || 0}, Skipped: ${statsResult.skipped || 0}`);
-              } catch (statsErr) {
-                const progress = `[${idx + 1}/${smsCampaigns.length}]`;
-                console.error(`   ❌ ${progress} Failed: ${statsErr.message}`);
-                backfillData.campaigns[sms.id] = {
-                  name: sms.name,
-                  error: statsErr.message,
-                  timestamp: new Date().toISOString(),
-                  status: 'failed'
-                };
-                failedCampaigns.push({ name: sms.name, id: sms.id, error: statsErr.message });
+            if (localSms) {
+              if (localSms.clientId) {
+                automationSmsCampaigns.push({ ...sms, localId: localSms.id });
+              } else {
+                smsOnlySmsCampaigns.push({ ...sms, localId: localSms.id });
               }
             }
+          }
+          
+          console.log(`   🎯 Priority: ${automationSmsCampaigns.length} automation SMS, ${smsOnlySmsCampaigns.length} SMS-only`);
+          
+          // Process automation SMS first (priority for UI display)
+          const orderedCampaigns = [...automationSmsCampaigns, ...smsOnlySmsCampaigns];
 
-            // Save backfill
-            backfillData.endTime = new Date().toISOString();
-            backfillData.summary = {
-              total: smsCampaigns.length,
-              successful: successfulCampaigns.length,
-              failed: failedCampaigns.length,
-              statsCreated: totalStatsCreated,
-              statsSkipped: totalStatsSkipped
-            };
+          // Process each SMS campaign sequentially
+          for (let idx = 0; idx < orderedCampaigns.length; idx++) {
+            const sms = orderedCampaigns[idx];
+            const progress = `[${idx + 1}/${orderedCampaigns.length}]`;
+            const priority = sms.localId && automationSmsCampaigns.find(s => s.id === sms.id) ? '🎯' : '📱';
             
             try {
-              fs.writeFileSync(backfillFile, JSON.stringify(backfillData, null, 2));
-              console.log(`   💾 Backfill saved: ${backfillFile}`);
-            } catch (backfillErr) {
-              console.warn(`   ⚠️  Failed to save backfill:`, backfillErr.message);
-            }
+              console.log(`   ${progress} ${priority} Fetching "${sms.name}"...`);
+              
+              const statsResult = await this.fetchAndStoreSmsStats(client, sms.localId, sms.id);
+              
+              // Backfill only summary (detailed data is in page files)
+              backfillData.campaigns[sms.id] = {
+                name: sms.name,
+                localId: sms.localId,
+                created: statsResult.created || 0,
+                skipped: statsResult.skipped || 0,
+                status: 'success'
+              };
 
-            console.log(`   ✅ SMS stats complete: ${totalStatsCreated} created, ${totalStatsSkipped} skipped for ${smsCampaigns.length} campaigns`);
-            if (failedCampaigns.length > 0) {
-              console.error(`   ❌ Failed campaigns: ${failedCampaigns.length}`);
+              totalStatsCreated += statsResult.created || 0;
+              totalStatsSkipped += statsResult.skipped || 0;
+              successfulCampaigns.push(sms.name);
+              console.log(`       ✅ ${statsResult.created || 0} created, ${statsResult.skipped || 0} skipped`);
+            } catch (statsErr) {
+              console.error(`   ${progress} ❌ ${statsErr.message}`);
+              backfillData.campaigns[sms.id] = {
+                name: sms.name,
+                error: statsErr.message,
+                status: 'failed'
+              };
             }
-          } catch (smsStatsErr) {
-            console.error('   ❌ SMS stats fetching failed:', smsStatsErr.message || smsStatsErr);
-            console.error('   Stack:', smsStatsErr.stack);
           }
+
+          // Save backfill summary (keep the file, don't delete)
+          backfillData.endTime = new Date().toISOString();
+          backfillData.summary = {
+            total: smsCampaigns.length,
+            successful: successfulCampaigns.length,
+            statsCreated: totalStatsCreated,
+            statsSkipped: totalStatsSkipped
+          };
+          
+          try {
+            fs.writeFileSync(backfillFile, JSON.stringify(backfillData, null, 2));
+            console.log(`   💾 Backfill summary: ${backfillFile}`);
+          } catch (backfillErr) {
+            console.warn(`   ⚠️  Failed to save backfill summary:`, backfillErr.message);
+          }
+
+          console.log(`\n✅ SMS stats complete: ${totalStatsCreated} created, ${totalStatsSkipped} skipped`);
         }
 
         console.log(`✅ SMS-only sync complete for ${client.name}: ${smsCampaigns.length} SMS campaigns`);
@@ -1717,114 +1718,108 @@ class MauticAPIService {
 
       // ✅ Fetch and store SMS stats for each campaign with BACKFILL to JSON
       // This is INDEPENDENT from SMS campaign save - runs even if save failed
+      // MUST COMPLETE before email reports start
       if (smsCampaigns && smsCampaigns.length > 0) {
-        try {
-          console.log(`\n📊 PRIORITY: Fetching SMS stats for ${smsCampaigns.length} campaigns (BEFORE email reports)...`);
+        console.log(`\n📊 PRIORITY: Fetching SMS stats for ${smsCampaigns.length} campaigns (BEFORE email reports)...`);
+        
+        // Create backfill storage for incremental saves
+        const backfillDir = path.join(__dirname, '..', '..', '.temp_pages', 'sms-stats-backfill');
+        if (!fs.existsSync(backfillDir)) {
+          fs.mkdirSync(backfillDir, { recursive: true });
+        }
+        
+        const backfillFile = path.join(backfillDir, `sms-${client.id}-${Date.now()}.json`);
+        const backfillData = {
+          clientId: client.id,
+          clientName: client.name,
+          startTime: new Date().toISOString(),
+          campaigns: {}
+        };
+
+        let totalStatsCreated = 0;
+        let totalStatsSkipped = 0;
+        let successfulCampaigns = [];
+
+        // 🎯 PRIORITY: Fetch automation client SMS campaigns first
+        const automationSmsCampaigns = [];
+        const smsOnlySmsCampaigns = [];
+        
+        for (const sms of smsCampaigns) {
+          const localSms = await prisma.mauticSms.findUnique({
+            where: { mauticId: sms.id },
+            select: { id: true, clientId: true, name: true }
+          });
           
-          // Create backfill storage for incremental saves
-          const backfillDir = path.join(__dirname, '..', '..', '.temp_pages', 'sms-stats-backfill');
-          if (!fs.existsSync(backfillDir)) {
-            fs.mkdirSync(backfillDir, { recursive: true });
-          }
-          
-          const backfillFile = path.join(backfillDir, `sms-stats-${client.id}-${Date.now()}.json`);
-          const backfillData = {
-            clientId: client.id,
-            clientName: client.name,
-            startTime: new Date().toISOString(),
-            campaigns: {}
-          };
-
-          let totalStatsCreated = 0;
-          let totalStatsSkipped = 0;
-          let failedCampaigns = [];
-          let successfulCampaigns = [];
-
-          // Process each SMS campaign sequentially to fetch stats
-          for (let idx = 0; idx < smsCampaigns.length; idx++) {
-            const sms = smsCampaigns[idx];
-            
-            try {
-              // Find the local SMS record to get its ID
-              const localSms = await prisma.mauticSms.findUnique({
-                where: { mauticId: sms.id }
-              });
-
-              if (!localSms) {
-                console.warn(`   ⚠️  Campaign not in DB: "${sms.name}" (ID: ${sms.id})`);
-                failedCampaigns.push({ name: sms.name, id: sms.id, reason: 'not_in_db' });
-                continue;
-              }
-
-              const progress = `[${idx + 1}/${smsCampaigns.length}]`;
-              console.log(`   ${progress} 📊 Fetching stats for "${sms.name}"...`);
-              
-              const statsResult = await this.fetchAndStoreSmsStats(client, localSms.id, sms.id);
-              
-              // Backfill stats to JSON
-              backfillData.campaigns[sms.id] = {
-                name: sms.name,
-                localId: localSms.id,
-                created: statsResult.created || 0,
-                skipped: statsResult.skipped || 0,
-                timestamp: new Date().toISOString(),
-                status: 'success'
-              };
-
-              totalStatsCreated += statsResult.created || 0;
-              totalStatsSkipped += statsResult.skipped || 0;
-              successfulCampaigns.push(sms.name);
-              
-              console.log(`       ✅ Created: ${statsResult.created || 0}, Skipped: ${statsResult.skipped || 0}`);
-            } catch (statsErr) {
-              const progress = `[${idx + 1}/${smsCampaigns.length}]`;
-              console.error(`   ❌ ${progress} Failed to fetch stats for "${sms.name}": ${statsErr.message}`);
-              
-              // Backfill error info
-              backfillData.campaigns[sms.id] = {
-                name: sms.name,
-                error: statsErr.message,
-                timestamp: new Date().toISOString(),
-                status: 'failed'
-              };
-              
-              failedCampaigns.push({ name: sms.name, id: sms.id, error: statsErr.message });
-              // Continue to next campaign even if this one fails
+          if (localSms) {
+            if (localSms.clientId) {
+              automationSmsCampaigns.push({ ...sms, localId: localSms.id });
+            } else {
+              smsOnlySmsCampaigns.push({ ...sms, localId: localSms.id });
             }
           }
+        }
+        
+        console.log(`   🎯 Priority: ${automationSmsCampaigns.length} automation SMS, ${smsOnlySmsCampaigns.length} SMS-only`);
+        
+        // Process automation SMS first (priority for UI display)
+        const orderedCampaigns = [...automationSmsCampaigns, ...smsOnlySmsCampaigns];
 
-          // Save backfill data to JSON
-          backfillData.endTime = new Date().toISOString();
-          backfillData.summary = {
-            total: smsCampaigns.length,
-            successful: successfulCampaigns.length,
-            failed: failedCampaigns.length,
-            statsCreated: totalStatsCreated,
-            statsSkipped: totalStatsSkipped
-          };
+        // Process each SMS campaign sequentially to fetch stats
+        for (let idx = 0; idx < orderedCampaigns.length; idx++) {
+          const sms = orderedCampaigns[idx];
+          const progress = `[${idx + 1}/${orderedCampaigns.length}]`;
+          const priority = automationSmsCampaigns.find(s => s.id === sms.id) ? '🎯' : '📱';
           
           try {
-            fs.writeFileSync(backfillFile, JSON.stringify(backfillData, null, 2));
-            console.log(`\n   💾 Backfill saved to: ${backfillFile}`);
-          } catch (backfillErr) {
-            console.warn(`   ⚠️  Failed to save backfill JSON:`, backfillErr.message);
-          }
+            console.log(`   ${progress} ${priority} Fetching "${sms.name}"...`);
+            
+            const statsResult = await this.fetchAndStoreSmsStats(client, sms.localId, sms.id);
+            
+            // Backfill stats summary
+            backfillData.campaigns[sms.id] = {
+              name: sms.name,
+              localId: sms.localId,
+              created: statsResult.created || 0,
+              skipped: statsResult.skipped || 0,
+              status: 'success'
+            };
 
-          console.log(`\n   📊 SMS STATS SUMMARY:`);
-          console.log(`      ✅ Successful: ${successfulCampaigns.length}/${smsCampaigns.length} campaigns`);
-          console.log(`      📝 Created: ${totalStatsCreated} stat records`);
-          console.log(`      ⏭️  Skipped: ${totalStatsSkipped} (already in DB)`);
-          
-          if (failedCampaigns.length > 0) {
-            console.error(`      ❌ Failed: ${failedCampaigns.length} campaigns:`);
-            failedCampaigns.forEach(f => {
-              console.error(`         - "${f.name}": ${f.error || f.reason}`);
-            });
+            totalStatsCreated += statsResult.created || 0;
+            totalStatsSkipped += statsResult.skipped || 0;
+            successfulCampaigns.push(sms.name);
+            
+            console.log(`       ✅ ${statsResult.created || 0} created, ${statsResult.skipped || 0} skipped`);
+          } catch (statsErr) {
+            console.error(`   ${progress} ❌ ${statsErr.message}`);
+            
+            // Backfill error info
+            backfillData.campaigns[sms.id] = {
+              name: sms.name,
+              error: statsErr.message,
+              status: 'failed'
+            };
           }
-        } catch (smsStatsErr) {
-          console.error('   ❌ SMS stats fetching failed:', smsStatsErr.message || smsStatsErr);
-          console.error('   Stack:', smsStatsErr.stack);
         }
+
+        // Save backfill data to JSON (keep the file, don't delete)
+        backfillData.endTime = new Date().toISOString();
+        backfillData.summary = {
+          total: smsCampaigns.length,
+          successful: successfulCampaigns.length,
+          statsCreated: totalStatsCreated,
+          statsSkipped: totalStatsSkipped
+        };
+        
+        try {
+          fs.writeFileSync(backfillFile, JSON.stringify(backfillData, null, 2));
+          console.log(`\n   💾 Backfill summary: ${backfillFile}`);
+        } catch (backfillErr) {
+          console.warn(`   ⚠️  Failed to save backfill summary:`, backfillErr.message);
+        }
+
+        console.log(`\n✅ SMS STATS COMPLETE`);
+        console.log(`   ✅ Successful: ${successfulCampaigns.length}/${smsCampaigns.length}`);
+        console.log(`   📝 Created: ${totalStatsCreated}, Skipped: ${totalStatsSkipped}`);
       }
 
       // Fetch report data AFTER SMS stats complete (gives priority to SMS)
@@ -1900,6 +1895,60 @@ class MauticAPIService {
   }
 
   /**
+   * Transform raw Mautic SMS stats into database-ready format
+   * Enriches with mobile numbers and replies for backfilling
+   * @param {Array} rawStats - Raw stats from Mautic API
+   * @param {number} mauticSmsId - Mautic SMS campaign ID
+   * @param {number} localSmsId - Local SMS ID
+   * @param {Map} mobileMap - Map of leadId to mobile number
+   * @param {Map} repliesMap - Map of leadId to reply data
+   * @returns {Array} Transformed stats ready for database insertion
+   */
+  async transformSmsStatsForDb(rawStats, mauticSmsId, localSmsId, mobileMap = new Map(), repliesMap = new Map()) {
+    const transformedStats = [];
+
+    for (const stat of rawStats) {
+      try {
+        // Handle different field name formats from Mautic API
+        const leadId = stat.lead_id || stat.leadId || stat.contact_id || stat.contactId;
+        const dateSent = stat.date_sent || stat.dateSent || stat.sent_date || stat.sentDate;
+        const isFailed = stat.is_failed || stat.isFailed || stat.failed || '0';
+
+        if (!leadId) {
+          console.warn(`   ⚠️  Skipping stat with no lead ID`);
+          continue;
+        }
+
+        // Get mobile number from map
+        const mobile = mobileMap.get(parseInt(leadId)) || null;
+        
+        // Get reply data from map
+        const replyData = repliesMap.get(parseInt(leadId)) || {};
+        const replyText = replyData.reply || null;
+        const replyCategory = replyText && replyText.toUpperCase().includes('STOP') ? 'Stop' : (replyText ? 'Other' : null);
+        const repliedAt = replyData.dateAdded ? new Date(replyData.dateAdded) : null;
+
+        transformedStats.push({
+          smsId: localSmsId,
+          mauticSmsId: mauticSmsId,
+          leadId: parseInt(leadId),
+          dateSent: dateSent ? new Date(dateSent) : null,
+          isFailed: String(isFailed),
+          mobile: mobile,
+          messageText: null, // Not available from stats API
+          replyText: replyText,
+          replyCategory: replyCategory,
+          repliedAt: repliedAt
+        });
+      } catch (err) {
+        console.warn(`   ⚠️  Error transforming stat:`, err.message);
+      }
+    }
+
+    return transformedStats;
+  }
+
+  /**
    * Fetch SMS delivery statistics for a specific campaign and store in database
    * Uses chunked fetching to handle large datasets
    * @param {Object} client - Client configuration
@@ -1909,18 +1958,10 @@ class MauticAPIService {
    */
   async fetchAndStoreSmsStats(client, localSmsId, mauticSmsId, forceFull = false) {
     try {
-      logger.info(`📊 Fetching SMS stats for campaign ${mauticSmsId} (local ID: ${localSmsId})${forceFull ? ' [FORCE FULL]' : ''}`);
+      logger.info(`📊 Fetching SMS stats for campaign ${mauticSmsId}${forceFull ? ' [FORCE FULL]' : ''}`);
       
       // Import SMS stats page manager for safe resumption
       const { default: smsPageManager } = await import('./smsStatsPageManager.js');
-      
-      // Mark as syncing
-      try {
-        const { markSmsAsSyncing } = await import('../routes/smsClient.js');
-        markSmsAsSyncing(client.id, localSmsId);
-      } catch (e) {
-        // Ignore if tracking module not available
-      }
       
       // ✅ Check if we already have stats for this campaign (incremental sync)
       if (!forceFull) {
@@ -1929,41 +1970,14 @@ class MauticAPIService {
         });
 
         if (existingCount > 0) {
-          logger.info(`   ℹ️  Found ${existingCount} existing stats - skipping (already synced)`);
-          
-          // Get the latest dateSent to show what we have
-          const latestStat = await prisma.mauticSmsStat.findFirst({
-            where: { mauticSmsId: mauticSmsId },
-            orderBy: { dateSent: 'desc' },
-            select: { dateSent: true, leadId: true }
-          });
-
-          if (latestStat?.dateSent) {
-            logger.info(`   📅 Latest stat date: ${latestStat.dateSent.toISOString()}, leadId: ${latestStat.leadId}`);
-          }
-          
-          logger.info(`   ⏭️  Skipping fetch - campaign already synced. Use forceFull=true to re-fetch.`);
-          
-          // Mark as sync complete
-          try {
-            const { markSmsAsSyncComplete } = await import('../routes/smsClient.js');
-            markSmsAsSyncComplete(client.id, localSmsId);
-          } catch (e) {
-            // Ignore if tracking module not available
-          }
-          
+          logger.info(`   ⏭️  Skipping - ${existingCount} stats already synced`);
           return { 
             created: 0, 
             skipped: existingCount, 
             total: existingCount,
-            incremental: true,
-            message: 'Campaign already synced - skipped'
+            message: 'Already synced'
           };
-        } else {
-          logger.info(`   ℹ️  No existing stats found - performing full sync`);
         }
-      } else {
-        logger.info(`   🔄 Force full sync requested - will re-fetch all stats`);
       }
       
       // 🔄 Resume from orphaned pages if process was interrupted
@@ -1972,51 +1986,103 @@ class MauticAPIService {
       let totalSkipped = 0;
       
       if (orphanedPages.length > 0) {
-        logger.info(`\n🔄 RESUMING: Processing ${orphanedPages.length} orphaned pages from previous sync...`);
+        logger.info(`\n🔄 RESUMING: ${orphanedPages.length} orphaned pages...`);
         
         const { default: smsService } = await import('./smsService.js');
         
         for (const orphaned of orphanedPages) {
           try {
-            logger.info(`   📖 Processing orphaned page ${orphaned.pageNumber} (${orphaned.data.length} records)...`);
-            
-            // Store stats from orphaned page
-            const storeResult = await smsService.storeSmsStats(localSmsId, mauticSmsId, orphaned.data, true);
-            
-            logger.info(`   ✅ Inserted page ${orphaned.pageNumber}: ${storeResult.created} created, ${storeResult.skipped} skipped`);
+            // Orphaned pages contain pre-transformed data
+            const storeResult = await smsService.storeTransformedSmsStats(orphaned.data);
             
             totalCreated += storeResult.created || 0;
             totalSkipped += storeResult.skipped || 0;
             
-            // Delete the temp file after successful insertion
             smsPageManager.deletePage(orphaned.pageNumber);
             
           } catch (e) {
-            logger.error(`   ❌ Failed to process orphaned page ${orphaned.pageNumber}:`, e.message);
-            // Leave the file for retry on next sync
+            logger.error(`   ❌ Failed page ${orphaned.pageNumber}: ${e.message}`);
           }
         }
-        
-        logger.info(`✅ Orphaned pages processed: ${totalCreated} created, ${totalSkipped} skipped\n`);
       }
       
       const apiClient = this.createClient(client);
 
+      // ✅ STEP 1: FETCH ALL LEAD IDs FOR THIS CAMPAIGN FIRST
+      logger.info(`   🔍 Fetching all lead IDs for campaign ${mauticSmsId}...`);
+      const allLeadIds = [];
+      let tempStart = 0;
+      const tempLimit = 5000;
+      let hasMoreLeads = true;
+      
+      while (hasMoreLeads) {
+        try {
+          const resp = await this.retryWithBackoff(() =>
+            apiClient.get('/stats/sms_message_stats', {
+              params: {
+                'where[0][col]': 'sms_id',
+                'where[0][expr]': 'eq',
+                'where[0][val]': mauticSmsId,
+                start: tempStart,
+                limit: tempLimit
+              }
+            })
+          );
+          
+          let stats = [];
+          if (Array.isArray(resp.data?.stats)) {
+            stats = resp.data.stats;
+          } else if (resp.data?.stats && typeof resp.data.stats === 'object') {
+            stats = Object.values(resp.data.stats);
+          }
+          
+          if (stats.length === 0) {
+            hasMoreLeads = false;
+          } else {
+            const leadIds = stats.map(s => s.lead_id || s.leadId).filter(Boolean);
+            allLeadIds.push(...leadIds);
+            tempStart += stats.length;
+            
+            if (stats.length < tempLimit) {
+              hasMoreLeads = false;
+            }
+          }
+        } catch (err) {
+          logger.error(`   ❌ Error fetching lead IDs: ${err.message}`);
+          hasMoreLeads = false;
+        }
+      }
+      
+      logger.info(`   ✅ Found ${allLeadIds.length} total lead IDs for this campaign`);
+
+      // ✅ STEP 2: FETCH MOBILE NUMBERS AND REPLIES FOR ALL LEADS
+      let mobileMap = new Map();
+      let repliesMap = new Map();
+      
+      if (allLeadIds.length > 0) {
+        logger.info(`   📱 Fetching mobiles and replies for ${allLeadIds.length} leads...`);
+        try {
+          mobileMap = await this.fetchMobileNumbersBulk(client, allLeadIds);
+          repliesMap = await this.fetchSmsRepliesBulk(client, allLeadIds);
+          logger.info(`   ✅ Bulk fetch complete: ${mobileMap.size} mobiles, ${repliesMap.size} replies`);
+        } catch (bulkErr) {
+          logger.warn(`   ⚠️  Bulk fetch failed: ${bulkErr.message}`);
+        }
+      }
+
       let allStats = [];
       let pageNumber = orphanedPages.length > 0 ? Math.max(...orphanedPages.map(p => p.pageNumber)) + 1 : 1;
       let start = 0;
-      const limit = 5000; // Fetch in chunks to avoid timeout
+      const limit = 5000;
       let hasMore = true;
       let fetchAttempts = 0;
-      const maxAttempts = 100; // Safety limit
+      const maxAttempts = 100;
 
       // Fetch stats in chunks and save each page
       while (hasMore && fetchAttempts < maxAttempts) {
         fetchAttempts++;
 
         try {
-          logger.info(`   Fetching page ${pageNumber} (start: ${start}, limit: ${limit})...`);
-
           const response = await this.retryWithBackoff(() =>
             apiClient.get('/stats/sms_message_stats', {
               params: {
@@ -2031,130 +2097,74 @@ class MauticAPIService {
             })
           );
 
-          // Log the raw response structure for debugging
-          logger.debug(`   Response structure: ${JSON.stringify({
-            hasData: !!response.data,
-            hasStats: !!response.data?.stats,
-            statsType: Array.isArray(response.data?.stats) ? 'array' : typeof response.data?.stats,
-            statsLength: Array.isArray(response.data?.stats) ? response.data.stats.length : 'N/A',
-            total: response.data?.total || response.data?.totalResults || 'N/A'
-          })}`);
-
           // Handle both array and object responses
           let stats = [];
           if (Array.isArray(response.data?.stats)) {
             stats = response.data.stats;
           } else if (response.data?.stats && typeof response.data.stats === 'object') {
-            // Convert object to array
             stats = Object.values(response.data.stats);
           } else if (response.data?.data && Array.isArray(response.data.data)) {
-            // Some endpoints return data instead of stats
             stats = response.data.data;
           }
 
-          logger.info(`   Page ${pageNumber}: Fetched ${stats.length} SMS stats`);
-
           if (stats.length === 0) {
-            logger.info(`   No more stats to fetch (empty response)`);
             hasMore = false;
             break;
           }
 
-          // 💾 SAVE PAGE TO DISK before inserting
-          const saveSuccess = smsPageManager.savePage(pageNumber, stats);
+          // ✅ TRANSFORM STATS TO DB FORMAT (with mobile and replies)
+          const transformedStats = await this.transformSmsStatsForDb(stats, mauticSmsId, localSmsId, mobileMap, repliesMap);
+          
+          // 💾 SAVE TRANSFORMED DATA TO DISK (not raw Mautic response)
+          const saveSuccess = smsPageManager.savePage(pageNumber, transformedStats);
           
           if (!saveSuccess) {
-            logger.warn(`   ⚠️  Page ${pageNumber} save failed - skipping database insert to be safe`);
             hasMore = false;
             break;
           }
 
-          // 📝 INSERT INTO DATABASE after file saved
-          logger.info(`   📝 Inserting page ${pageNumber} into database...`);
+          // 📝 INSERT INTO DATABASE (use transformed  data)
           const { default: smsService } = await import('./smsService.js');
-          
-          const storeResult = await smsService.storeSmsStats(localSmsId, mauticSmsId, stats, true);
-          
-          logger.info(`   ✅ Page ${pageNumber} inserted: ${storeResult.created} created, ${storeResult.skipped} skipped`);
+          const storeResult = await smsService.storeTransformedSmsStats(transformedStats);
           
           totalCreated += storeResult.created || 0;
           totalSkipped += storeResult.skipped || 0;
 
-          // 🗑️ DELETE PAGE FILE after successful insertion
-          smsPageManager.deletePage(pageNumber);
+          // ✅ Keep page files for recovery (don't delete)
 
           // Check if we should continue
           const total = response.data?.total || response.data?.totalResults || 0;
           if (stats.length < limit) {
-            // Got less than requested, we're done
-            logger.info(`   Page ${pageNumber}: Partial chunk (${stats.length} < ${limit}), stopping`);
             hasMore = false;
           } else if (total > 0 && (allStats.length + stats.length) >= total) {
-            // Reached the total
-            logger.info(`   Page ${pageNumber}: Reached total, stopping`);
             hasMore = false;
           } else {
-            // Continue to next page
-            allStats.push(...stats); // Track for total count
+            allStats.push(...stats);
             start += stats.length;
             pageNumber++;
-            logger.info(`   Continuing to page ${pageNumber} (total so far: ${allStats.length})`);
           }
 
         } catch (chunkError) {
           logger.error(`   Error fetching page ${pageNumber}:`, chunkError.message);
-          // If first chunk fails, throw error
           if (fetchAttempts === 1) {
             throw chunkError;
           }
-          // Otherwise, stop fetching but process what we have
           hasMore = false;
         }
       }
 
-      logger.info(`✅ Fetched and stored total of ${allStats.length} SMS stats for campaign ${mauticSmsId}`);
-
-      // If no stats were fetched and no orphaned pages, return early
       if (allStats.length === 0 && orphanedPages.length === 0) {
-        logger.info(`⚠️  No SMS stats found for campaign ${mauticSmsId} - campaign may not have been sent yet`);
         return { created: 0, skipped: 0, total: 0 };
-      }
-
-      // 📊 Final Results: Combine pages from resume + fresh fetch
-      logger.info(`\n📊 SMS Stats Sync Complete for campaign ${mauticSmsId}`);
-      logger.info(`   From orphaned pages: ${totalCreated} created, ${totalSkipped} skipped`);
-      logger.info(`   From fresh fetch: Additional records inserted incrementally`);
-      logger.info(`   Total: ${totalCreated} created, ${totalSkipped} skipped`);
-      
-      // Mark as sync complete
-      try {
-        const { markSmsAsSyncComplete } = await import('../routes/smsClient.js');
-        markSmsAsSyncComplete(client.id, localSmsId);
-      } catch (e) {
-        // Ignore if tracking module not available
       }
       
       return {
         created: totalCreated,
         skipped: totalSkipped,
-        total: totalCreated + totalSkipped,
-        message: 'SMS stats synced with page-based resumable checkpoints'
+        total: totalCreated + totalSkipped
       };
 
     } catch (error) {
-      logger.error(`❌ Failed to fetch and store SMS stats for campaign ${mauticSmsId}:`, {
-        error: error.message,
-        stack: error.stack?.split('\n').slice(0, 3).join('\n')
-      });
-      
-      // Mark as sync complete even on error
-      try {
-        const { markSmsAsSyncComplete } = await import('../routes/smsClient.js');
-        markSmsAsSyncComplete(client.id, localSmsId);
-      } catch (e) {
-        // Ignore if tracking module not available
-      }
-      
+      logger.error(`❌ Failed to fetch SMS stats for campaign ${mauticSmsId}:`, error.message);
       return { created: 0, skipped: 0, total: 0, error: error.message };
     }
   }
