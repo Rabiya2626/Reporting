@@ -1337,33 +1337,108 @@ class MauticAPIService {
 
             const smsSaveRes = await smsService.storeSmsForMauticClient(client.id, smsCampaigns, allMauticClients);
             console.log(`   ✅ Saved SMS campaigns to DB: created=${smsSaveRes.created} updated=${smsSaveRes.updated} preserved=${smsSaveRes.preserved} categorized=${smsSaveRes.categorized}`);
+          } catch (smsErr) {
+            console.warn('   ⚠️ Failed to save SMS campaigns to DB (non-fatal):', smsErr.message || smsErr);
+          }
+        }
 
-            // ✅ Fetch and store SMS stats for each campaign
+        // ✅ Fetch and store SMS stats for each campaign with BACKFILL
+        // This is INDEPENDENT from SMS campaign save - runs even if save failed
+        if (smsCampaigns && smsCampaigns.length > 0) {
+          try {
             console.log(`📊 Fetching SMS stats for ${smsCampaigns.length} campaigns...`);
+            
+            // Create backfill storage
+            const backfillDir = path.join(__dirname, '..', '..', '.temp_pages', 'sms-stats-backfill');
+            if (!fs.existsSync(backfillDir)) {
+              fs.mkdirSync(backfillDir, { recursive: true });
+            }
+            
+            const backfillFile = path.join(backfillDir, `sms-stats-${client.id}-${Date.now()}.json`);
+            const backfillData = {
+              clientId: client.id,
+              clientName: client.name,
+              isSmsOnly: true,
+              startTime: new Date().toISOString(),
+              campaigns: {}
+            };
+
             let totalStatsCreated = 0;
             let totalStatsSkipped = 0;
+            let failedCampaigns = [];
+            let successfulCampaigns = [];
 
-            for (const sms of smsCampaigns) {
+            // Process each SMS campaign sequentially
+            for (let idx = 0; idx < smsCampaigns.length; idx++) {
+              const sms = smsCampaigns[idx];
               try {
-                // Find the local SMS record to get its ID
+                // Find the local SMS record
                 const localSms = await prisma.mauticSms.findUnique({
                   where: { mauticId: sms.id }
                 });
 
-                if (localSms) {
-                  const statsResult = await this.fetchAndStoreSmsStats(client, localSms.id, sms.id);
-                  totalStatsCreated += statsResult.created || 0;
-                  totalStatsSkipped += statsResult.skipped || 0;
-                  console.log(`   ✅ SMS "${sms.name}": ${statsResult.created} stats created, ${statsResult.skipped} skipped`);
+                if (!localSms) {
+                  console.warn(`   ⚠️  Campaign not in DB: "${sms.name}" (ID: ${sms.id})`);
+                  failedCampaigns.push({ name: sms.name, id: sms.id, reason: 'not_in_db' });
+                  continue;
                 }
+
+                const progress = `[${idx + 1}/${smsCampaigns.length}]`;
+                console.log(`   ${progress} 📊 Fetching stats for "${sms.name}"...`);
+                
+                const statsResult = await this.fetchAndStoreSmsStats(client, localSms.id, sms.id);
+                
+                // Backfill
+                backfillData.campaigns[sms.id] = {
+                  name: sms.name,
+                  localId: localSms.id,
+                  created: statsResult.created || 0,
+                  skipped: statsResult.skipped || 0,
+                  timestamp: new Date().toISOString(),
+                  status: 'success'
+                };
+
+                totalStatsCreated += statsResult.created || 0;
+                totalStatsSkipped += statsResult.skipped || 0;
+                successfulCampaigns.push(sms.name);
+                console.log(`       ✅ Created: ${statsResult.created || 0}, Skipped: ${statsResult.skipped || 0}`);
               } catch (statsErr) {
-                console.warn(`   ⚠️ Failed to fetch stats for SMS ${sms.id}:`, statsErr.message);
+                const progress = `[${idx + 1}/${smsCampaigns.length}]`;
+                console.error(`   ❌ ${progress} Failed: ${statsErr.message}`);
+                backfillData.campaigns[sms.id] = {
+                  name: sms.name,
+                  error: statsErr.message,
+                  timestamp: new Date().toISOString(),
+                  status: 'failed'
+                };
+                failedCampaigns.push({ name: sms.name, id: sms.id, error: statsErr.message });
               }
             }
 
-            console.log(`   ✅ SMS stats complete: ${totalStatsCreated} created, ${totalStatsSkipped} skipped`);
-          } catch (smsErr) {
-            console.warn('   ⚠️ Failed to save SMS campaigns to DB (non-fatal):', smsErr.message || smsErr);
+            // Save backfill
+            backfillData.endTime = new Date().toISOString();
+            backfillData.summary = {
+              total: smsCampaigns.length,
+              successful: successfulCampaigns.length,
+              failed: failedCampaigns.length,
+              statsCreated: totalStatsCreated,
+              statsSkipped: totalStatsSkipped
+            };
+            
+            try {
+              fs.writeFileSync(backfillFile, JSON.stringify(backfillData, null, 2));
+              console.log(`   💾 Backfill saved: ${backfillFile}`);
+            } catch (backfillErr) {
+              console.warn(`   ⚠️  Failed to save backfill:`, backfillErr.message);
+            }
+
+            console.log(`   ✅ SMS stats complete: ${totalStatsCreated} created, ${totalStatsSkipped} skipped for ${smsCampaigns.length} campaigns`);
+            if (failedCampaigns.length > 0) {
+              console.error(`   ❌ Failed campaigns: ${failedCampaigns.length}`);
+            }
+          } catch (smsStatsErr) {
+            console.error('   ❌ SMS stats fetching failed:', smsStatsErr.message || smsStatsErr);
+            console.error('   Stack:', smsStatsErr.stack);
           }
         }
 
@@ -1634,38 +1709,127 @@ class MauticAPIService {
 
           const smsSaveRes = await smsService.storeSmsForMauticClient(client.id, smsCampaigns, allMauticClients);
           console.log(`   ✅ Saved SMS campaigns to DB: created=${smsSaveRes.created} updated=${smsSaveRes.updated} preserved=${smsSaveRes.preserved} categorized=${smsSaveRes.categorized}`);
+        } catch (smsErr) {
+          console.error('   ❌ SMS campaign save failed:', smsErr.message || smsErr);
+          console.error('   Stack:', smsErr.stack);
+        }
+      }
 
-          // ✅ Fetch and store SMS stats for each campaign
-          console.log(`📊 Fetching SMS stats for ${smsCampaigns.length} campaigns...`);
+      // ✅ Fetch and store SMS stats for each campaign with BACKFILL to JSON
+      // This is INDEPENDENT from SMS campaign save - runs even if save failed
+      if (smsCampaigns && smsCampaigns.length > 0) {
+        try {
+          console.log(`\n📊 PRIORITY: Fetching SMS stats for ${smsCampaigns.length} campaigns (BEFORE email reports)...`);
+          
+          // Create backfill storage for incremental saves
+          const backfillDir = path.join(__dirname, '..', '..', '.temp_pages', 'sms-stats-backfill');
+          if (!fs.existsSync(backfillDir)) {
+            fs.mkdirSync(backfillDir, { recursive: true });
+          }
+          
+          const backfillFile = path.join(backfillDir, `sms-stats-${client.id}-${Date.now()}.json`);
+          const backfillData = {
+            clientId: client.id,
+            clientName: client.name,
+            startTime: new Date().toISOString(),
+            campaigns: {}
+          };
+
           let totalStatsCreated = 0;
           let totalStatsSkipped = 0;
+          let failedCampaigns = [];
+          let successfulCampaigns = [];
 
-          for (const sms of smsCampaigns) {
+          // Process each SMS campaign sequentially to fetch stats
+          for (let idx = 0; idx < smsCampaigns.length; idx++) {
+            const sms = smsCampaigns[idx];
+            
             try {
               // Find the local SMS record to get its ID
               const localSms = await prisma.mauticSms.findUnique({
                 where: { mauticId: sms.id }
               });
 
-              if (localSms) {
-                const statsResult = await this.fetchAndStoreSmsStats(client, localSms.id, sms.id);
-                totalStatsCreated += statsResult.created || 0;
-                totalStatsSkipped += statsResult.skipped || 0;
-                console.log(`   ✅ SMS "${sms.name}": ${statsResult.created} stats created, ${statsResult.skipped} skipped`);
+              if (!localSms) {
+                console.warn(`   ⚠️  Campaign not in DB: "${sms.name}" (ID: ${sms.id})`);
+                failedCampaigns.push({ name: sms.name, id: sms.id, reason: 'not_in_db' });
+                continue;
               }
+
+              const progress = `[${idx + 1}/${smsCampaigns.length}]`;
+              console.log(`   ${progress} 📊 Fetching stats for "${sms.name}"...`);
+              
+              const statsResult = await this.fetchAndStoreSmsStats(client, localSms.id, sms.id);
+              
+              // Backfill stats to JSON
+              backfillData.campaigns[sms.id] = {
+                name: sms.name,
+                localId: localSms.id,
+                created: statsResult.created || 0,
+                skipped: statsResult.skipped || 0,
+                timestamp: new Date().toISOString(),
+                status: 'success'
+              };
+
+              totalStatsCreated += statsResult.created || 0;
+              totalStatsSkipped += statsResult.skipped || 0;
+              successfulCampaigns.push(sms.name);
+              
+              console.log(`       ✅ Created: ${statsResult.created || 0}, Skipped: ${statsResult.skipped || 0}`);
             } catch (statsErr) {
-              console.warn(`   ⚠️ Failed to fetch stats for SMS ${sms.id}:`, statsErr.message);
+              const progress = `[${idx + 1}/${smsCampaigns.length}]`;
+              console.error(`   ❌ ${progress} Failed to fetch stats for "${sms.name}": ${statsErr.message}`);
+              
+              // Backfill error info
+              backfillData.campaigns[sms.id] = {
+                name: sms.name,
+                error: statsErr.message,
+                timestamp: new Date().toISOString(),
+                status: 'failed'
+              };
+              
+              failedCampaigns.push({ name: sms.name, id: sms.id, error: statsErr.message });
+              // Continue to next campaign even if this one fails
             }
           }
 
-          console.log(`   ✅ SMS stats complete: ${totalStatsCreated} created, ${totalStatsSkipped} skipped`);
-        } catch (smsErr) {
-          console.warn('   ⚠️ Failed to save SMS campaigns to DB (non-fatal):', smsErr.message || smsErr);
+          // Save backfill data to JSON
+          backfillData.endTime = new Date().toISOString();
+          backfillData.summary = {
+            total: smsCampaigns.length,
+            successful: successfulCampaigns.length,
+            failed: failedCampaigns.length,
+            statsCreated: totalStatsCreated,
+            statsSkipped: totalStatsSkipped
+          };
+          
+          try {
+            fs.writeFileSync(backfillFile, JSON.stringify(backfillData, null, 2));
+            console.log(`\n   💾 Backfill saved to: ${backfillFile}`);
+          } catch (backfillErr) {
+            console.warn(`   ⚠️  Failed to save backfill JSON:`, backfillErr.message);
+          }
+
+          console.log(`\n   📊 SMS STATS SUMMARY:`);
+          console.log(`      ✅ Successful: ${successfulCampaigns.length}/${smsCampaigns.length} campaigns`);
+          console.log(`      📝 Created: ${totalStatsCreated} stat records`);
+          console.log(`      ⏭️  Skipped: ${totalStatsSkipped} (already in DB)`);
+          
+          if (failedCampaigns.length > 0) {
+            console.error(`      ❌ Failed: ${failedCampaigns.length} campaigns:`);
+            failedCampaigns.forEach(f => {
+              console.error(`         - "${f.name}": ${f.error || f.reason}`);
+            });
+          }
+        } catch (smsStatsErr) {
+          console.error('   ❌ SMS stats fetching failed:', smsStatsErr.message || smsStatsErr);
+          console.error('   Stack:', smsStatsErr.stack);
         }
       }
 
-      // Fetch report data AFTER metadata succeeds (prevents background execution on error)
+      // Fetch report data AFTER SMS stats complete (gives priority to SMS)
       // This is a long-running operation that saves directly to DB
+      console.log(`\n✅ SMS stats complete. Now fetching email reports...`);
       const emailReportResult = await this.fetchReport(client);
 
       return {
