@@ -2011,14 +2011,15 @@ class MauticAPIService {
             totalCreated += storeResult.created || 0;
             totalSkipped += storeResult.skipped || 0;
             
-            smsPageManager.deletePage(orphaned.pageNumber);
-            
+            // Don't delete orphaned page after successful processing (keep for later, do not delete)
+            // smsPageManager.deletePage(orphaned.pageNumber);
+             
           } catch (e) {
             logger.error(`   ❌ Failed page ${orphaned.pageNumber}: ${e.message}`);
           }
         }
       }
-      
+
       const apiClient = this.createClient(client);
 
       // ✅ STEP 1: FETCH ALL LEAD IDs FOR THIS CAMPAIGN FIRST
