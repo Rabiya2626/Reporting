@@ -4,6 +4,144 @@ import campaignGrouping from './campaignGrouping.js';
 
 class SmsService {
   /**
+   * 🔐 SAFE SMSCLID RESOLVER: Validates and resolves smsClientId to prevent foreign key violations
+   * This helper ensures we never try to set a smsClientId that doesn't exist
+   * @param {string} mauticUrl - Mautic URL to lookup SMS client
+   * @param {string} username - Username to lookup SMS client
+   * @param {number|null} fallbackId - Optional fallback ID to validate
+   * @returns {Promise<number|null>} Valid SmsClient.id or null
+   */
+  async resolveSmsClientId(mauticUrl, username, fallbackId = null) {
+    try {
+      // Normalize credentials for matching
+      const normalizedUrl = mauticUrl.trim().replace(/\/$/, '').toLowerCase();
+      const normalizedUsername = username.trim();
+
+      // First: Try to find SMS client by credentials (most reliable)
+      const smsClient = await prisma.smsClient.findFirst({
+        where: {
+          mauticUrl: normalizedUrl,
+          username: normalizedUsername
+        },
+        select: { id: true }
+      });
+
+      if (smsClient) {
+        logger.info(`   🔗 Resolved smsClientId: ${smsClient.id} via credentials`);
+        return smsClient.id;
+      }
+
+      // Second: If fallbackId provided, validate it exists
+      if (fallbackId) {
+        const exists = await prisma.smsClient.findUnique({
+          where: { id: fallbackId },
+          select: { id: true }
+        });
+
+        if (exists) {
+          logger.info(`   🔗 Validated fallback smsClientId: ${fallbackId}`);
+          return fallbackId;
+        } else {
+          logger.warn(`   ⚠️  Fallback smsClientId ${fallbackId} doesn't exist (orphaned reference)`);
+        }
+      }
+
+      // No valid smsClientId found
+      logger.info(`   🔗 No valid smsClientId found for ${normalizedUrl}`);
+      return null;
+    } catch (error) {
+      logger.error(`❌ Error resolving smsClientId:`, error.message);
+      return null;
+    }
+  }
+
+  /**
+   * 🧹 CLEANUP ORPHANED REFERENCES: Fix campaigns with invalid smsClientId before sync
+   * This prevents foreign key violations from old/deleted client references
+   * @returns {Promise<number>} Number of orphaned references cleaned
+   */
+  async cleanupOrphanedReferences() {
+    try {
+      logger.info(`🧹 Checking for orphaned smsClientId references...`);
+
+      // Find all campaigns with smsClientId set
+      const campaignsWithSmsClient = await prisma.mauticSms.findMany({
+        where: {
+          smsClientId: { not: null }
+        },
+        select: {
+          id: true,
+          mauticId: true,
+          name: true,
+          smsClientId: true,
+          originMauticUrl: true,
+          originUsername: true
+        }
+      });
+
+      if (campaignsWithSmsClient.length === 0) {
+        logger.info(`   ✅ No campaigns with smsClientId found`);
+        return 0;
+      }
+
+      logger.info(`   📊 Found ${campaignsWithSmsClient.length} campaigns with smsClientId`);
+
+      // Get all valid SMS client IDs
+      const validSmsClients = await prisma.smsClient.findMany({
+        select: { id: true }
+      });
+      const validIds = new Set(validSmsClients.map(c => c.id));
+
+      // Find orphaned references
+      const orphaned = campaignsWithSmsClient.filter(c => !validIds.has(c.smsClientId));
+
+      if (orphaned.length === 0) {
+        logger.info(`   ✅ All smsClientId references are valid`);
+        return 0;
+      }
+
+      logger.warn(`   ⚠️  Found ${orphaned.length} orphaned smsClientId references`);
+
+      // Fix each orphaned reference
+      let fixed = 0;
+      for (const campaign of orphaned) {
+        try {
+          // Try to resolve correct smsClientId using origin credentials
+          let resolvedId = null;
+          if (campaign.originMauticUrl && campaign.originUsername) {
+            resolvedId = await this.resolveSmsClientId(
+              campaign.originMauticUrl,
+              campaign.originUsername,
+              null
+            );
+          }
+
+          // Update the campaign
+          await prisma.mauticSms.update({
+            where: { id: campaign.id },
+            data: { smsClientId: resolvedId }
+          });
+
+          if (resolvedId) {
+            logger.info(`   ✅ Fixed campaign "${campaign.name}": ${campaign.smsClientId} → ${resolvedId}`);
+          } else {
+            logger.info(`   ✅ Cleaned campaign "${campaign.name}": ${campaign.smsClientId} → null`);
+          }
+          fixed++;
+        } catch (fixError) {
+          logger.error(`   ❌ Failed to fix campaign "${campaign.name}":`, fixError.message);
+        }
+      }
+
+      logger.info(`🧹 Cleanup complete: ${fixed}/${orphaned.length} orphaned references fixed`);
+      return fixed;
+    } catch (error) {
+      logger.error(`❌ Failed to cleanup orphaned references:`, error.message);
+      return 0;
+    }
+  }
+
+  /**
    * ✅ DETERMINISTIC GROUPING: Only group NEW campaigns, preserve REAL client assignments
    * ⚠️  RE-EVALUATES campaigns assigned to SMS-only clients (IPS, BPC) for better matching
    * Checks database for existing SMS campaign assignments and reuses them selectively
@@ -270,6 +408,15 @@ class SmsService {
       const normalizedOriginUrl = smsClient.mauticUrl.trim().replace(/\/$/, '').toLowerCase();
       const originUsername = smsClient.username.trim();
       
+      // ✅ SAFE smsClientId RESOLUTION: Use helper to validate and resolve correct ID
+      const resolvedSmsClientId = await this.resolveSmsClientId(
+        smsClient.mauticUrl,
+        smsClient.username,
+        null
+      );
+      
+      logger.info(`   🔗 Using smsClientId: ${resolvedSmsClientId} for ${allSms.length} campaigns`);
+      
       for (const sms of allSms) {
         const result = await prisma.mauticSms.upsert({
           where: { mauticId: sms.id },
@@ -278,7 +425,7 @@ class SmsService {
             category: sms.category,
             sentCount: sms.sentCount || 0,
             clientId: sms.clientId,
-            smsClientId: null,
+            smsClientId: resolvedSmsClientId,  // ✅ Use validated ID
             // ✅ Set origin tracking on update (in case it wasn't set before)
             originMauticUrl: normalizedOriginUrl,
             originUsername: originUsername,
@@ -290,7 +437,7 @@ class SmsService {
             category: sms.category,
             sentCount: sms.sentCount || 0,
             clientId: sms.clientId,
-            smsClientId: null,
+            smsClientId: resolvedSmsClientId,  // ✅ Use validated ID
             // ✅ Set origin tracking on create
             originMauticUrl: normalizedOriginUrl,
             originUsername: originUsername
@@ -354,8 +501,12 @@ class SmsService {
       const normalizedOriginUrl = mauticClient.mauticUrl.trim().replace(/\/$/, '').toLowerCase();
       const originUsername = mauticClient.username.trim();
       
-      // ✅ KEY: Track if source is SMS-only client (to preserve credentials for contact activity fetch)
-      const isSourceSmsClt = mauticClient.reportId === 'sms-only';
+      // ✅ SAFE smsClientId RESOLUTION: Use helper to validate and resolve correct ID
+      const smsClientIdToUse = await this.resolveSmsClientId(
+        mauticClient.mauticUrl,
+        mauticClient.username,
+        null
+      );
       
       let created = 0, updated = 0;
       let preserved = 0;
@@ -377,9 +528,9 @@ class SmsService {
           category: sms.category,
           sentCount: sms.sentCount || 0,
           clientId: sms.clientId,  // ✅ Use categorized client assignment
-          // ✅ CRITICAL FIX: Preserve SMS client ID if source is SMS-only client
+          // ✅ FIXED: Use corresponding SmsClient.id (if exists) to track origin credentials
           // This allows contact activity fetch to use correct credentials even when campaign is grouped under Mautic client
-          smsClientId: isSourceSmsClt ? mauticClientId : null,
+          smsClientId: smsClientIdToUse,
           originMauticUrl: normalizedOriginUrl,
           originUsername: originUsername,
           updatedAt: new Date()
@@ -426,14 +577,14 @@ class SmsService {
           category: sms.category,
           sentCount: sms.sentCount || 0,
           clientId: null,  // ✅ No Mautic client match
-          smsClientId: mauticClientId,
+          smsClientId: smsClientIdToUse,  // ✅ FIXED: Use corresponding SmsClient.id or null
           originMauticUrl: normalizedOriginUrl,
           originUsername: originUsername,
           updatedAt: new Date()
         };
 
         if (existing) {
-          if (!existing.clientId && existing.smsClientId === mauticClientId) {
+          if (!existing.clientId && existing.smsClientId === smsClientIdToUse) {
             preserved++;
             logger.info(`♻️  Preserving SMS "${sms.name}" as SMS-only under original SMS client`);
           } else {
@@ -487,6 +638,18 @@ class SmsService {
   async storeSms(smsClientId, smsCampaigns, mauticClients = []) {
     try {
       logger.info(`Storing ${smsCampaigns.length} SMS campaigns for SMS client ${smsClientId}`);
+      
+      // 🔐 VALIDATE smsClientId exists to prevent foreign key violations
+      const validatedSmsClientId = await prisma.smsClient.findUnique({
+        where: { id: smsClientId },
+        select: { id: true }
+      });
+
+      if (!validatedSmsClientId) {
+        throw new Error(`SMS Client ID ${smsClientId} does not exist (deleted or invalid)`);
+      }
+
+      logger.info(`   ✅ Validated smsClientId: ${smsClientId}`);
       
       const categorized = this.categorizeSms(smsCampaigns, mauticClients);
       let created = 0, updated = 0;

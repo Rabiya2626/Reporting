@@ -1061,6 +1061,13 @@ class MauticAPIService {
             console.error(`   ❌ Save error for page ${pageNumber}:`, saveError.message);
             // Continue to next page even if save fails
           }
+          
+          // 🧹 MEMORY CLEANUP: Clear batch data and hint garbage collection
+          batchRows.length = 0;
+          if (global.gc && pageNumber % 10 === 0) {
+            global.gc();
+            console.log(`   🧹 Memory cleanup triggered (page ${pageNumber})`);
+          }
         }
 
         if (batchRows.length === 0) {
@@ -1325,6 +1332,9 @@ class MauticAPIService {
         if (smsCampaigns && smsCampaigns.length > 0) {
           try {
             const { default: smsService } = await import('./smsService.js');
+
+            // 🧹 CLEANUP: Fix orphaned smsClientId references before sync to prevent foreign key violations
+            await smsService.cleanupOrphanedReferences();
 
             // Get all active Mautic clients for categorization (exclude sms-only clients)
             const allMauticClients = await prisma.mauticClient.findMany({
@@ -1698,6 +1708,9 @@ class MauticAPIService {
       if (smsCampaigns && smsCampaigns.length > 0) {
         try {
           const { default: smsService } = await import('./smsService.js');
+
+          // 🧹 CLEANUP: Fix orphaned smsClientId references before sync to prevent foreign key violations
+          await smsService.cleanupOrphanedReferences();
 
           // Get all active Mautic clients for categorization (exclude sms-only clients)
           const allMauticClients = await prisma.mauticClient.findMany({

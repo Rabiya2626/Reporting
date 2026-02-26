@@ -936,6 +936,9 @@ async function syncSmsClientData(smsClientId) {
 
     logger.info(`📱 Syncing SMS client "${smsClient.name}" with ${mauticClients.length} Mautic clients for categorization`);
 
+    // 🧹 CLEANUP: Fix orphaned smsClientId references before sync to prevent foreign key violations
+    await smsService.cleanupOrphanedReferences();
+
     // Fetch SMS campaigns from Mautic
     const smsCampaigns = await mauticAPIService.fetchSmses(smsClient);
 
