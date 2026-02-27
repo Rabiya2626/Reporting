@@ -587,7 +587,7 @@ router.post("/clients", async (req, res) => {
       setImmediate(async () => {
         try {
           logger.debug(`⚡ Starting FAST metadata fetch for ${name}...`);
-          
+
           // Fetch only lightweight metadata (NO stats, NO reports)
           const [emails, campaigns, segments] = await Promise.all([
             mauticAPI.fetchEmails(client, false), // false = no individual stats
@@ -1598,7 +1598,7 @@ router.get("/sync/status", async (req, res) => {
   // Use cached values if available and fresh (unless sync is in progress)
   const now = Date.now();
   const cacheValid = (now - syncStatusCache.lastUpdated) < SYNC_STATUS_CACHE_TTL;
-  
+
   let lastSyncAt = syncStatusCache.lastSyncAt;
   let activeClientsCount = syncStatusCache.activeClientsCount;
 
@@ -1714,7 +1714,7 @@ router.post("/sync/all", async (req, res) => {
         // ✅ Only if SFTP credentials are configured AND user explicitly requested it
         // ⚡ OPTIMIZATION: Skip DropCowboy sync by default to avoid unnecessary overhead
         const triggerDropCowboy = String(req.query.syncDropCowboy || "false") === "true";
-        
+
         if (triggerDropCowboy) {
           (async () => {
             try {
@@ -1741,7 +1741,7 @@ router.post("/sync/all", async (req, res) => {
 
               // Trigger SFTP sync to re-fetch and re-match data to Mautic clients
               const syncResult = await dropCowboyScheduler.fetchAndProcessData();
-              
+
               if (syncResult.skipped) {
                 logger.debug(`⏭️  DropCowboy sync skipped: ${syncResult.reason}`);
               } else {
@@ -1879,7 +1879,7 @@ router.post("/sync/:clientId", async (req, res) => {
         // ⚡ OPTIMIZATION: Skip DropCowboy sync by default to avoid unnecessary overhead
         if (result.success) {
           const triggerDropCowboy = String(req.query.syncDropCowboy || "false") === "true";
-          
+
           if (triggerDropCowboy) {
             (async () => {
               try {
@@ -1907,7 +1907,7 @@ router.post("/sync/:clientId", async (req, res) => {
                 // Trigger SFTP sync to re-fetch and re-match data to Mautic clients
                 const syncResult =
                   await dropCowboyScheduler.fetchAndProcessData();
-                
+
                 if (syncResult.skipped) {
                   logger.debug(`⏭️  DropCowboy sync skipped: ${syncResult.reason}`);
                 } else {
@@ -2042,17 +2042,38 @@ router.get("/smses/:id/stats", async (req, res) => {
 
 /**
  * GET /api/contact/:id
- * Get contact activity (SMS messages and replies) from endpoint on-demand
+ * Get contact activity (SMS messages and replies)
+ * Fetch from database, if not found fetch from endpoint on-demand
  */
 router.get("/contact/:id", async (req, res) => {
   const { id } = req.params;
   const { smsId } = req.query;
 
   try {
+    // First find from database, else fetch on demand if not found
+    const smsStat = await prisma.mauticSmsStat.findFirst({
+      where: {
+        leadId: parseInt(id),
+        mauticSmsId: parseInt(smsId)
+      },
+      select: { mobile: true, messageText: true, replyText: true }
+    });
+
+    if (smsStat) {
+      res.json({
+        id,
+        mobile: smsStat.mobile,
+        message: smsStat.messageText,
+        reply: smsStat.replyText
+      });
+
+      return;
+    }
+
     // Find which client owns this smsId
     const smsCampaign = await prisma.mauticSms.findUnique({
       where: { mauticId: parseInt(smsId) },
-      include: { 
+      include: {
         client: true,           // Grouped Mautic client (e.g., Century)
         smsClient: true         // Original SMS client that fetched this campaign
       }
@@ -2066,7 +2087,7 @@ router.get("/contact/:id", async (req, res) => {
     // SMS campaigns fetched from IPS but grouped under Century still need IPS credentials to fetch contact activity
     // because the contact ONLY exists in IPS's Mautic instance, not Century's
     const authenticatedClient = smsCampaign.smsClient || smsCampaign.client;
-    
+
     if (!authenticatedClient) {
       return res.status(404).json({ error: "No credentials found for SMS campaign's original source client" });
     }
@@ -2083,23 +2104,26 @@ router.get("/contact/:id", async (req, res) => {
     const contact = contactRes.data?.contact || {};
     const events = activityRes.data?.events || [];
 
-    // Filter events - only SMS sends and replies relevant to this campaign
-    const filteredEvents = events.filter(
-      e =>
-        (e.event === "sms.sent" && e.details?.stat?.sms_id?.toString() === smsCampaign.mauticId.toString()) ||
-        e.event === "sms_reply"
+    // Filter events - only SMS sends relevant to this campaign and replies
+    const filteredMessageEvents = events.filter(
+      e => e.event === "sms.sent" && e.details?.stat?.sms_id?.toString() === smsCampaign.mauticId.toString()
     );
 
-    const name = `${contact.fields?.core?.firstname?.value || ""} ${contact.fields?.core?.lastname?.value || ""}`.trim();
+    const filteredReplyEvents = events.filter(
+      e => e.event === "sms_reply"
+    );
+
+    const messages = filteredMessageEvents.map(e => e.details?.stat?.message || "");
+    const replies = filteredReplyEvents.map(e => e.details?.message || "");
+
+    // const name = `${contact.fields?.core?.firstname?.value || ""} ${contact.fields?.core?.lastname?.value || ""}`.trim();
     const mobile = contact.fields?.core?.mobile?.value || "";
 
     res.json({
       id,
-      contact: {
-        name,
-        mobile
-      },
-      events: filteredEvents
+      mobile,
+      message: messages[0],
+      reply: replies[0]
     });
 
   } catch (err) {

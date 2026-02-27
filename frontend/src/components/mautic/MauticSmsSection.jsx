@@ -9,7 +9,7 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
     const [messages, setMessages] = useState([]);
     const [selectedLead, setSelectedLead] = useState(null);
     const [leadActivity, setLeadActivity] = useState([]);
-    const [selectedContactInfo, setSelectedContactInfo] = useState(null);
+    // const [selectedContactInfo, setSelectedContactInfo] = useState(null);
     const [currentPage, setCurrentPage] = useState(1);
     const [totalPages, setTotalPages] = useState(1);
     const [totalRecords, setTotalRecords] = useState(0);
@@ -44,7 +44,7 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
                 }
             );
             console.log(response.data);
-            
+
             // Update all state after data is loaded
             setSelectedCampaign(campaign);
             setCurrentPage(page);
@@ -52,12 +52,12 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
             setMessages(response.data.data || []);
             setTotalRecords(response.data.total || response.data.pagination?.total || 0);
             setTotalPages(Math.ceil((response.data.total || 0) / itemsPerPage));
-            
+
             // Store campaign-level stats (not page-level)
             setOverallDelivered(response.data.delivered || 0);
             setOverallFailed(response.data.failed || campaign.failedCount || 0);
             setOverallReplied(response.data.replied || 0);
-            
+
             setIsSyncing(response.data.syncing || false); // Track syncing status
             setClientSyncing(response.data.syncing || false); // Also set client syncing
             setError(null);
@@ -115,12 +115,12 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
                 setMessages(response.data.data || []);
                 setTotalRecords(response.data.total || response.data.pagination?.total || 0);
                 setTotalPages(Math.ceil((response.data.total || 0) / newItemsPerPage));
-                
+
                 // Use campaign-level stats (not page-level)
                 setOverallDelivered(response.data.delivered || 0);
                 setOverallFailed(response.data.failed || selectedCampaign.failedCount || 0);
                 setOverallReplied(response.data.replied || 0);
-                
+
                 setIsSyncing(response.data.syncing || false);
                 setError(null);
             } catch (error) {
@@ -142,13 +142,11 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
                 `${baseUrl}/api/mautic/contact/${leadId}`,
                 { params: { smsId: selectedCampaign.mauticId } }
             );
-            console.log("res", response);
-            
 
             // Update states once data arrives
             setSelectedLead(leadId);
-            setLeadActivity(response.data.events || []);
-            setSelectedContactInfo(response.data.contact || {});
+            setLeadActivity(response.data || []);
+            // setSelectedContactInfo(response.data.contact || {});
 
             setError(null);
         } catch (error) {
@@ -172,7 +170,7 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
         setView('messages');
         setSelectedLead(null);
         setLeadActivity([]);
-        setSelectedContactInfo({});
+        // setSelectedContactInfo({});
         setError(null);
     };
 
@@ -263,7 +261,7 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
                                 {isSyncing ? 'Syncing this campaign...' : 'Syncing other campaigns for this client...'}
                             </p>
                             <p className="text-xs text-blue-700">
-                                {isSyncing 
+                                {isSyncing
                                     ? 'Fetching mobile numbers and message details from Mautic. This page will update automatically.'
                                     : 'Another SMS campaign is being synced. Data will be available shortly.'}
                             </p>
@@ -386,7 +384,7 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
                             <MessageCircle className="w-16 h-16 text-gray-300 mb-4" />
                             <p className="text-gray-600 text-lg font-medium mb-2">No messages found</p>
                             <p className="text-gray-500 text-sm">
-                                {replyFilter !== 'all' 
+                                {replyFilter !== 'all'
                                     ? `No messages with "${replyFilter}" replies found for this campaign.`
                                     : 'No messages found for this campaign.'}
                             </p>
@@ -420,8 +418,8 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
                                             <td className="px-4 py-3 max-w-xs">
                                                 {msg.replyText ? (
                                                     <div className="text-sm text-gray-700 truncate" title={msg.replyText}>
-                                                        {msg.replyText.length > 20 
-                                                            ? msg.replyText.substring(0, 20) + '...' 
+                                                        {msg.replyText.length > 20
+                                                            ? msg.replyText.substring(0, 20) + '...'
                                                             : msg.replyText}
                                                     </div>
                                                 ) : (
@@ -430,10 +428,9 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
                                             </td>
                                             <td className="px-4 py-3">
                                                 {msg.replyCategory ? (
-                                                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                                                        msg.replyCategory === 'Stop' ? 'bg-green-100 text-green-800' :
+                                                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${msg.replyCategory === 'Stop' ? 'bg-green-100 text-green-800' :
                                                         'bg-yellow-100 text-yellow-800'
-                                                    }`}>
+                                                        }`}>
                                                         {msg.replyCategory}
                                                     </span>
                                                 ) : (
@@ -488,8 +485,13 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
 
     // VIEW 3: LEAD ACTIVITY
     if (view === 'activity') {
-        const smsEvents = leadActivity.filter(e => e.event === 'sms.sent');
-        const repliedEvents = leadActivity.filter(e => e.event === 'sms_reply');
+        // const smsEvents = leadActivity.filter(e => e.event === 'sms.sent');
+        // const repliedEvents = leadActivity.filter(e => e.event === 'sms_reply');
+        const message = leadActivity.message;
+        const reply = leadActivity.reply;
+        const totalMessages = message ? 1 : 0;
+        const totalReplies = reply ? 1 : 0;
+        const totalEvents = totalMessages + totalReplies;
 
         return (
             <div className="animate-fade-in">
@@ -503,7 +505,7 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
 
                 <div className="mb-6">
                     <h2 className="text-2xl font-bold text-gray-900 mb-2">
-                        {`Lead Activity - ${selectedContactInfo?.name || "ID #" + selectedLead}`}
+                        {`Lead Activity - ${leadActivity?.mobile || "ID #" + selectedLead}`}
                     </h2>
                     <p className="text-sm text-gray-600">
                         Campaign: {selectedCampaign.name}
@@ -516,7 +518,7 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
                         <div className="flex items-center justify-between">
                             <div>
                                 <p className="text-sm font-medium text-purple-600 mb-1">Total Events</p>
-                                <p className="text-3xl font-bold text-purple-900">{leadActivity.length}</p>
+                                <p className="text-3xl font-bold text-purple-900">{totalEvents}</p>
                             </div>
                             <Activity className="w-10 h-10 text-purple-500 opacity-50" />
                         </div>
@@ -526,7 +528,7 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
                         <div className="flex items-center justify-between">
                             <div>
                                 <p className="text-sm font-medium text-blue-600 mb-1">SMS Events</p>
-                                <p className="text-3xl font-bold text-blue-900">{smsEvents.length}</p>
+                                <p className="text-3xl font-bold text-blue-900">{totalMessages}</p>
                             </div>
                             <MessageSquare className="w-10 h-10 text-blue-500 opacity-50" />
                         </div>
@@ -536,7 +538,7 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
                         <div className="flex items-center justify-between">
                             <div>
                                 <p className="text-sm font-medium text-green-600 mb-1">Replies</p>
-                                <p className="text-3xl font-bold text-green-900">{repliedEvents.length}</p>
+                                <p className="text-3xl font-bold text-green-900">{totalReplies}</p>
                             </div>
                             <MessageCircle className="w-10 h-10 text-green-500 opacity-50" />
                         </div>
@@ -548,7 +550,7 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
                     <div className="px-6 py-4 border-b border-gray-200 bg-gray-50">
                         <h3 className="text-lg font-semibold text-gray-900">Activity Timeline</h3>
                         <p className="text-sm text-gray-500 mt-1">
-                            Showing all {leadActivity.length} events
+                            Showing all {totalEvents} events
                         </p>
                     </div>
 
@@ -556,7 +558,7 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
                         <div className="flex justify-center items-center py-12">
                             <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
                         </div>
-                    ) : leadActivity.length === 0 ? (
+                    ) : totalEvents === 0 ? (
                         <div className="px-6 py-12 text-center">
                             <Activity className="w-16 h-16 text-gray-300 mx-auto mb-4" />
                             <p className="text-gray-500 font-medium">No activity found for this lead</p>
@@ -564,51 +566,40 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
                     ) : (
                         <div className="px-6 py-4">
                             <div className="space-y-4">
-                                {leadActivity.map((event, idx) => {
-                                    const isSmsEvent = event.event === 'sms.sent';
-                                    const isReply = event.event === 'sms_reply';
-
-                                    return (
-                                        <div
-                                            key={idx}
-                                            className={`flex gap-4 p-4 rounded-lg border ${isReply
-                                                ? 'bg-green-50 border-green-200'
-                                                : isSmsEvent
-                                                    ? 'bg-blue-50 border-blue-200'
-                                                    : 'bg-gray-50 border-gray-200'
-                                                }`}
-                                        >
-                                            <div className="flex-shrink-0">
-                                                {isReply ? (
-                                                    <MessageCircle className="w-6 h-6 text-green-600" />
-                                                ) : isSmsEvent ? (
-                                                    <MessageSquare className="w-6 h-6 text-blue-600" />
-                                                ) : (
-                                                    <Activity className="w-6 h-6 text-gray-600" />
-                                                )}
-                                            </div>
-                                            <div className="flex-1">
-                                                <p className="text-sm font-medium text-gray-900">
-                                                    {event.event === "sms.sent" ? "SMS Sent" : event.event === "sms_reply" ? "SMS Reply" : "Unknown Event"}
-                                                </p>
-                                                {event.event === "sms.sent" &&
-                                                    <pre className="mt-2 text-xs text-gray-600 bg-white rounded p-2 border border-gray-200 whitespace-pre-wrap break-words">
-                                                        {JSON.stringify(event.details?.stat?.message, null, 2)}
-                                                    </pre>
-                                                }
-                                                {event.event === "sms_reply" &&
-                                                    <pre className="mt-2 text-xs text-gray-600 bg-white rounded p-2 border border-gray-200 whitespace-pre-wrap break-words">
-                                                        {JSON.stringify(event.details?.message, null, 2)}
-                                                    </pre>
-                                                }
-                                                <div className="text-xs text-gray-500 mt-2">
-                                                    <Clock className="inline w-3 h-3 mr-1" />
-                                                    {new Date(event.timestamp).toLocaleString()}
-                                                </div>
-                                            </div>
+                                {totalMessages > 0 &&
+                                    <div className="flex gap-4 p-4 rounded-lg border bg-blue-50 border-blue-200">
+                                        <div className="flex-shrink-0">
+                                            <MessageSquare className="w-6 h-6 text-blue-600" />
                                         </div>
-                                    );
-                                })}
+                                        <div className="flex-1">
+                                            <p className="text-sm font-medium text-gray-900">
+                                                SMS Sent
+                                            </p>
+                                            <pre className="mt-2 text-xs text-gray-600 bg-white rounded p-2 border border-gray-200 whitespace-pre-wrap break-words">
+                                                {JSON.stringify(message, null, 2)}
+                                            </pre>
+                                            {/* <div className="text-xs text-gray-500 mt-2">
+                                                <Clock className="inline w-3 h-3 mr-1" />
+                                                {new Date(event.timestamp).toLocaleString()}
+                                            </div> */}
+                                        </div>
+                                    </div>
+                                }
+                                {totalReplies > 0 &&
+                                    <div className="flex gap-4 p-4 rounded-lg border bg-green-50 border-green-200">
+                                        <div className="flex-shrink-0">
+                                            <MessageCircle className="w-6 h-6 text-green-600" />
+                                        </div>
+                                        <div className="flex-1">
+                                            <p className="text-sm font-medium text-gray-900">
+                                                SMS Reply
+                                            </p>
+                                            <pre className="mt-2 text-xs text-gray-600 bg-white rounded p-2 border border-gray-200 whitespace-pre-wrap break-words">
+                                                {JSON.stringify(reply, null, 2)}
+                                            </pre>
+                                        </div>
+                                    </div>
+                                }
                             </div>
                         </div>
                     )}

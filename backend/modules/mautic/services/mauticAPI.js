@@ -443,11 +443,11 @@ class MauticAPIService {
       // Process each email one by one (pure sequential)
       for (let index = 0; index < emails.length; index++) {
         const email = emails[index];
-        
+
         try {
           const emailId = email.id || email.mauticEmailId || email.e_id;
           const emailName = email.name || 'Unnamed';
-          
+
           if (!emailId) {
             console.log(`   ⚠️  [${index + 1}/${emails.length}] Skipping - No email ID found`);
             continue;
@@ -464,7 +464,7 @@ class MauticAPIService {
 
           while (hasMore) {
             pageNum++;
-            
+
             try {
               const resp = await apiClient.get('/stats/channel_url_trackables', {
                 params: {
@@ -477,20 +477,20 @@ class MauticAPIService {
               });
 
               const pageRows = resp.data?.stats || resp.data || [];
-              
+
               if (pageNum === 1) {
                 console.log(`      ✅ Received ${pageRows.length} click trackable records from API`);
               } else {
                 console.log(`      ✅ Page ${pageNum}: Received ${pageRows.length} more records`);
               }
-              
+
               if (pageRows.length > 0) {
                 allRawRows.push(...pageRows);
-                
+
                 if (pageNum === 1 && pageRows.length > 0) {
                   console.log(`      📊 Sample: redirectId=${pageRows[0].redirect_id}, hits=${pageRows[0].hits}, uniqueHits=${pageRows[0].unique_hits}`);
                 }
-                
+
                 // If we got fewer records than requested, we've reached the end
                 if (pageRows.length < pageSize) {
                   hasMore = false;
@@ -505,7 +505,7 @@ class MauticAPIService {
               if (pageError.response && pageError.response.data) {
                 const errorData = pageError.response.data;
                 const pageRows = errorData.stats || (Array.isArray(errorData) ? errorData : []);
-                
+
                 if (Array.isArray(pageRows) && pageRows.length > 0) {
                   if (pageNum === 1) {
                     console.log(`      ⚠️  Got ${pageError.response.status} error but received ${pageRows.length} records`);
@@ -514,9 +514,9 @@ class MauticAPIService {
                   } else {
                     console.log(`      ⚠️  Page ${pageNum}: Got ${pageError.response.status} error but received ${pageRows.length} more records`);
                   }
-                  
+
                   allRawRows.push(...pageRows);
-                  
+
                   // Check if we got a full page (likely more data available)
                   if (pageRows.length >= 100) {
                     // 403 responses seem to default to 100 records, try next page
@@ -551,12 +551,12 @@ class MauticAPIService {
               channel_id: parseInt(emailId, 10) || 0,
               url: r.url || r.path || null
             };
-            
+
             // Log invalid records
             if (!record.redirect_id || !record.channel_id) {
               console.log(`      ⚠️  Invalid record [${rIndex}]: redirectId=${record.redirect_id}, channelId=${record.channel_id}`);
             }
-            
+
             return record;
           });
 
@@ -575,11 +575,11 @@ class MauticAPIService {
       // This prevents losing data when same redirectId appears in different emails
       console.log(`\n   🔄 Starting deduplication process...`);
       console.log(`      Input: ${clickRows.length} records`);
-      
+
       const dedupMap = new Map();
       let duplicateCount = 0;
       let invalidCount = 0;
-      
+
       for (const row of clickRows) {
         // Validate record
         if (!row.redirect_id || !row.channel_id) {
@@ -587,10 +587,10 @@ class MauticAPIService {
           console.log(`      ⚠️  Skipping invalid record: redirectId=${row.redirect_id}, channelId=${row.channel_id}`);
           continue;
         }
-        
+
         // Create composite key to preserve per-email click data
         const key = `${client.id}|${row.channel_id}|${row.redirect_id}`;
-        
+
         if (!dedupMap.has(key)) {
           dedupMap.set(key, row);
         } else {
@@ -599,17 +599,17 @@ class MauticAPIService {
           const existing = dedupMap.get(key);
           const oldHits = existing.hits;
           const oldUniqueHits = existing.unique_hits;
-          
+
           existing.hits = Math.max(existing.hits, row.hits || 0);
           existing.unique_hits = Math.max(existing.unique_hits, row.unique_hits || 0);
-          
+
           if (existing.hits !== oldHits || existing.unique_hits !== oldUniqueHits) {
             console.log(`      🔄 Updated duplicate: channelId=${row.channel_id}, redirectId=${row.redirect_id}`);
             console.log(`         Hits: ${oldHits} → ${existing.hits}, UniqueHits: ${oldUniqueHits} → ${existing.unique_hits}`);
           }
         }
       }
-      
+
       const deduped = Array.from(dedupMap.values());
       console.log(`      ✅ Deduplication complete:`);
       console.log(`         Original: ${clickRows.length}`);
@@ -619,7 +619,7 @@ class MauticAPIService {
 
       console.log(`\n   💾 Saving ${deduped.length} unique records to database...`);
       const saveResult = await dataService.saveClickTrackables(client.id, deduped);
-      
+
       console.log(`\n✅ Click trackables processing complete:`);
       console.log(`   📊 Summary:`);
       console.log(`      - API returned: ${clickRows.length} records`);
@@ -627,7 +627,7 @@ class MauticAPIService {
       console.log(`      - Created in DB: ${saveResult.created}`);
       console.log(`      - Updated in DB: ${saveResult.updated || 0}`);
       console.log(`      - Total processed: ${(saveResult.created || 0) + (saveResult.updated || 0)}/${deduped.length}`);
-      
+
       if ((saveResult.created === 0 && saveResult.updated === 0) && deduped.length > 0) {
         console.warn(`\n⚠️  WARNING: ${deduped.length} trackables processed but 0 saved/updated!`);
         console.warn(`   Possible reasons:`);
@@ -635,7 +635,7 @@ class MauticAPIService {
         console.warn(`   - Invalid data (check validation errors)`);
         console.warn(`   - Constraint violations`);
       }
-      
+
       return saveResult;
     } catch (error) {
       console.error('❌ Error fetching click trackables:', error.message || error);
@@ -704,10 +704,10 @@ class MauticAPIService {
       // Process each segment one by one (pure sequential)
       for (let i = 0; i < segments.length; i++) {
         const segment = segments[i];
-        
+
         try {
           console.log(`   📋 [${i + 1}/${segments.length}] Counting contacts for: ${segment.name}`);
-          
+
           // Query contacts API filtered by segment to get count
           const contactResponse = await apiClient.get('/contacts', {
             params: {
@@ -779,10 +779,10 @@ class MauticAPIService {
     try {
       console.log(`📊 Fetching click trackable records for ${emails.length} emails...`);
       const clickRows = [];
-      
+
       // Import dataService to save click trackables incrementally
       const { default: dataService } = await import('./dataService.js');
-      
+
       // Process in batches of 10 concurrently
       const batchSize = 10;
       for (let i = 0; i < emails.length; i += batchSize) {
@@ -793,7 +793,7 @@ class MauticAPIService {
             return { emailId: email.id, stats };
           })
         );
-        
+
         for (const r of results) {
           if (r.status === 'fulfilled') {
             const { emailId, stats } = r.value;
@@ -808,9 +808,9 @@ class MauticAPIService {
             }
           }
         }
-        
+
         console.log(`   Processed ${Math.min(i + batchSize, emails.length)}/${emails.length} emails (${clickRows.length} click records)...`);
-        
+
         // Save incrementally every 500 records to avoid memory issues
         if (clickRows.length >= 500) {
           try {
@@ -822,7 +822,7 @@ class MauticAPIService {
           }
         }
       }
-      
+
       // Save any remaining click trackables
       if (clickRows.length > 0) {
         try {
@@ -832,7 +832,7 @@ class MauticAPIService {
           console.warn(`   ⚠️  Failed to save final click trackables: ${saveErr.message}`);
         }
       }
-      
+
       console.log(`✅ Click trackable fetch complete`);
       return { success: true, clickRows: [] }; // Return empty since we saved incrementally
     } catch (error) {
@@ -850,7 +850,7 @@ class MauticAPIService {
   async fetchBounceStats(client, emails) {
     console.log(`❌ Fetching bounce stats for ${emails.length} emails...`);
     const eventRows = [];
-    
+
     const batchSize = 10;
     for (let i = 0; i < emails.length; i += batchSize) {
       const batch = emails.slice(i, i + batchSize);
@@ -874,7 +874,7 @@ class MauticAPIService {
           }
         })
       );
-      
+
       for (const r of results) {
         if (r.status === 'fulfilled') {
           const { emailId, stats } = r.value;
@@ -883,10 +883,10 @@ class MauticAPIService {
           }
         }
       }
-      
+
       console.log(`   Processed ${Math.min(i + batchSize, emails.length)}/${emails.length} emails (${eventRows.length} bounces)...`);
     }
-    
+
     console.log(`✅ Bounce stats collected: ${eventRows.length}`);
     return eventRows;
   }
@@ -900,7 +900,7 @@ class MauticAPIService {
   async fetchUnsubscribeStats(client, emails) {
     console.log(`🚫 Fetching unsubscribe stats for ${emails.length} emails...`);
     const eventRows = [];
-    
+
     const batchSize = 10;
     for (let i = 0; i < emails.length; i += batchSize) {
       const batch = emails.slice(i, i + batchSize);
@@ -927,7 +927,7 @@ class MauticAPIService {
           }
         })
       );
-      
+
       for (const r of results) {
         if (r.status === 'fulfilled') {
           const { emailId, stats } = r.value;
@@ -936,10 +936,10 @@ class MauticAPIService {
           }
         }
       }
-      
+
       console.log(`   Processed ${Math.min(i + batchSize, emails.length)}/${emails.length} emails (${eventRows.length} unsubscribes)...`);
     }
-    
+
     console.log(`✅ Unsubscribe stats collected: ${eventRows.length}`);
     return eventRows;
   }
@@ -1061,7 +1061,7 @@ class MauticAPIService {
             console.error(`   ❌ Save error for page ${pageNumber}:`, saveError.message);
             // Continue to next page even if save fails
           }
-          
+
           // 🧹 MEMORY CLEANUP: Clear batch data and hint garbage collection
           batchRows.length = 0;
           if (global.gc && pageNumber % 10 === 0) {
@@ -1139,7 +1139,7 @@ class MauticAPIService {
       const PAGE_LIMIT = Math.max(1000, Math.min(parseInt(limit, 10) || 5000, 200000));
       const RETRIES = 6;
       const CONCURRENCY = 1; // ⚠️ CRITICAL: Sequential to prevent database race conditions
-      
+
       console.log(`⚠️  Historical fetch mode: SEQUENTIAL (CONCURRENCY=1) to prevent data loss`);
       console.log(`   This ensures saveEmailReports() doesn't have concurrent write conflicts`);
 
@@ -1230,21 +1230,21 @@ class MauticAPIService {
 
       if (totalPages > 1) {
         console.log(`   🔄 Processing ${totalPages - 1} additional pages sequentially (one by one)...`);
-        
+
         // Process each page one by one (pure sequential)
         for (let p = 2; p <= totalPages; p++) {
           try {
             console.log(`      📄 Page ${p}/${totalPages}: Fetching from Mautic...`);
             const payload = await fetchPage(p);
-            
+
             if (!payload || !Array.isArray(payload.data)) {
               console.warn(`      ⚠️  Page ${p}: No data returned`);
               continue;
             }
-            
+
             console.log(`      ✅ Page ${p}: Fetched ${payload.data.length} records`);
             savePage(p, payload);
-            
+
             try {
               console.log(`      💾 Page ${p}: Saving to database...`);
               const r = await dataService.saveEmailReports(client.id, payload.data);
@@ -1356,13 +1356,13 @@ class MauticAPIService {
         // This is INDEPENDENT from SMS campaign save - runs even if save failed
         if (smsCampaigns && smsCampaigns.length > 0) {
           console.log(`\n📊 Fetching SMS stats for ${smsCampaigns.length} campaigns...`);
-          
+
           // Create backfill storage
           const backfillDir = path.join(__dirname, '..', '..', '.temp_pages', 'sms-stats-backfill');
           if (!fs.existsSync(backfillDir)) {
             fs.mkdirSync(backfillDir, { recursive: true });
           }
-          
+
           const backfillFile = path.join(backfillDir, `sms-${client.id}-${Date.now()}.json`);
           const backfillData = {
             clientId: client.id,
@@ -1379,13 +1379,13 @@ class MauticAPIService {
           // 🎯 PRIORITY: Fetch automation client SMS campaigns first
           const automationSmsCampaigns = [];
           const smsOnlySmsCampaigns = [];
-          
+
           for (const sms of smsCampaigns) {
             const localSms = await prisma.mauticSms.findUnique({
               where: { mauticId: sms.id },
               select: { id: true, clientId: true, name: true }
             });
-            
+
             if (localSms) {
               if (localSms.clientId) {
                 automationSmsCampaigns.push({ ...sms, localId: localSms.id });
@@ -1394,9 +1394,9 @@ class MauticAPIService {
               }
             }
           }
-          
+
           console.log(`   🎯 Priority: ${automationSmsCampaigns.length} automation SMS, ${smsOnlySmsCampaigns.length} SMS-only`);
-          
+
           // Process automation SMS first (priority for UI display)
           const orderedCampaigns = [...automationSmsCampaigns, ...smsOnlySmsCampaigns];
 
@@ -1405,12 +1405,12 @@ class MauticAPIService {
             const sms = orderedCampaigns[idx];
             const progress = `[${idx + 1}/${orderedCampaigns.length}]`;
             const priority = sms.localId && automationSmsCampaigns.find(s => s.id === sms.id) ? '🎯' : '📱';
-            
+
             try {
               console.log(`   ${progress} ${priority} Fetching "${sms.name}"...`);
-              
+
               const statsResult = await this.fetchAndStoreSmsStats(client, sms.localId, sms.id);
-              
+
               // Backfill only summary (detailed data is in page files)
               backfillData.campaigns[sms.id] = {
                 name: sms.name,
@@ -1442,7 +1442,7 @@ class MauticAPIService {
             statsCreated: totalStatsCreated,
             statsSkipped: totalStatsSkipped
           };
-          
+
           try {
             fs.writeFileSync(backfillFile, JSON.stringify(backfillData, null, 2));
             console.log(`   💾 Backfill summary: ${backfillFile}`);
@@ -1497,19 +1497,19 @@ class MauticAPIService {
       if (!hasExistingData) {
         // Full initial sync: fetch all metadata SEQUENTIALLY (step by step)
         console.log(`🚀 INITIAL SYNC - Fetching metadata sequentially (step by step)${shouldSkipSms ? '' : ' including SMS'}...`);
-        
+
         console.log(`\n📧 Step 1/4: Fetching emails...`);
         emails = await this.fetchEmails(client, false); // ⚡ FALSE = NO individual stats fetch!
         console.log(`   ✅ Fetched ${emails.length} emails`);
-        
+
         console.log(`\n🎯 Step 2/4: Fetching campaigns...`);
         campaigns = await this.fetchCampaigns(client);
         console.log(`   ✅ Fetched ${campaigns.length} campaigns`);
-        
+
         console.log(`\n📋 Step 3/4: Fetching segments...`);
         segments = await this.fetchSegments(client);
         console.log(`   ✅ Fetched ${segments.length} segments`);
-        
+
         // ✅ Only fetch SMS if no SMS-only client exists with same URL
         if (!shouldSkipSms) {
           console.log(`\n📱 Step 4/4: Fetching SMS campaigns...`);
@@ -1519,16 +1519,16 @@ class MauticAPIService {
           console.log(`\n📱 Step 4/4: Skipping SMS (SMS-only client exists)`);
           smsCampaigns = [];
         }
-        
+
         console.log(`\n✅ Metadata fetch complete (sequential)`);
       } else {
         // Incremental sync: fetch emails AND SMS sequentially (to update stats), skip campaigns/segments
         console.log(`🔄 INCREMENTAL SYNC for ${client.name} — fetching sequentially...`);
-        
+
         console.log(`\n📧 Step 1: Fetching emails to update stats...`);
         emails = await this.fetchEmails(client, false);
         console.log(`   ✅ Fetched ${emails.length} emails`);
-        
+
         // ✅ Only fetch SMS if no SMS-only client exists with same URL
         if (!shouldSkipSms) {
           console.log(`\n📱 Step 2: Fetching SMS campaigns to update stats...`);
@@ -1538,7 +1538,7 @@ class MauticAPIService {
           console.log(`\n📱 Step 2: Skipping SMS (SMS-only client exists)`);
           smsCampaigns = [];
         }
-        
+
         console.log(`\n✅ Incremental fetch complete (sequential)`);
       }
 
@@ -1601,9 +1601,9 @@ class MauticAPIService {
       try {
         if (emails && emails.length > 0) {
           console.log(`\n📊 Processing click trackables for ${emails.length} emails...`);
-          
+
           const clickFetchResult = await this.fetchAllEmailClickStats(client, emails);
-          
+
           if (!clickFetchResult.success) {
             console.warn(`   ⚠️  Click fetch reported failure: ${clickFetchResult.error}`);
           }
@@ -1611,10 +1611,10 @@ class MauticAPIService {
           // Aggregate click trackables and update email records with clickedCount AND uniqueClicks
           console.log(`\n📊 Aggregating click data from database...`);
           console.log(`   🔍 Looking up click data for ${emails.length} emails...`);
-          
+
           const emailIds = emails.map(e => parseInt(e.id, 10)).filter(Boolean);
           console.log(`   📧 Valid email IDs to aggregate: ${emailIds.length}`);
-          
+
           if (emailIds.length === 0) {
             console.warn(`   ⚠️  No valid email IDs found - skipping aggregation`);
           } else {
@@ -1628,7 +1628,7 @@ class MauticAPIService {
             });
 
             console.log(`   ✅ Aggregation complete: Found click data for ${clickAggregates.length} emails`);
-            
+
             if (clickAggregates.length > 0) {
               // Log sample
               const sample = clickAggregates[0];
@@ -1644,16 +1644,16 @@ class MauticAPIService {
             ]));
 
             console.log(`   🗺️  Created click map with ${clickMap.size} entries`);
-            
+
             let updatedCount = 0;
             let skippedCount = 0;
-            
+
             console.log(`\n   💾 Updating email records with click data...`);
-            
+
             for (const email of emails) {
               const emailId = String(email.id);
               const clickData = clickMap.get(emailId);
-              
+
               if (clickData && (clickData.clickedCount > 0 || clickData.uniqueClicks > 0)) {
                 try {
                   const sentCount = parseInt(email.sentCount || 0, 10);
@@ -1690,7 +1690,7 @@ class MauticAPIService {
                 skippedCount++;
               }
             }
-            
+
             console.log(`\n   ✅ Email update complete:`);
             console.log(`      Total emails: ${emails.length}`);
             console.log(`      Updated with clicks: ${updatedCount}`);
@@ -1734,13 +1734,13 @@ class MauticAPIService {
       // MUST COMPLETE before email reports start
       if (smsCampaigns && smsCampaigns.length > 0) {
         console.log(`\n📊 PRIORITY: Fetching SMS stats for ${smsCampaigns.length} campaigns (BEFORE email reports)...`);
-        
+
         // Create backfill storage for incremental saves
         const backfillDir = path.join(__dirname, '..', '..', '.temp_pages', 'sms-stats-backfill');
         if (!fs.existsSync(backfillDir)) {
           fs.mkdirSync(backfillDir, { recursive: true });
         }
-        
+
         const backfillFile = path.join(backfillDir, `sms-${client.id}-${Date.now()}.json`);
         const backfillData = {
           clientId: client.id,
@@ -1756,13 +1756,13 @@ class MauticAPIService {
         // 🎯 PRIORITY: Fetch automation client SMS campaigns first
         const automationSmsCampaigns = [];
         const smsOnlySmsCampaigns = [];
-        
+
         for (const sms of smsCampaigns) {
           const localSms = await prisma.mauticSms.findUnique({
             where: { mauticId: sms.id },
             select: { id: true, clientId: true, name: true }
           });
-          
+
           if (localSms) {
             if (localSms.clientId) {
               automationSmsCampaigns.push({ ...sms, localId: localSms.id });
@@ -1771,9 +1771,9 @@ class MauticAPIService {
             }
           }
         }
-        
+
         console.log(`   🎯 Priority: ${automationSmsCampaigns.length} automation SMS, ${smsOnlySmsCampaigns.length} SMS-only`);
-        
+
         // Process automation SMS first (priority for UI display)
         const orderedCampaigns = [...automationSmsCampaigns, ...smsOnlySmsCampaigns];
 
@@ -1782,12 +1782,12 @@ class MauticAPIService {
           const sms = orderedCampaigns[idx];
           const progress = `[${idx + 1}/${orderedCampaigns.length}]`;
           const priority = automationSmsCampaigns.find(s => s.id === sms.id) ? '🎯' : '📱';
-          
+
           try {
             console.log(`   ${progress} ${priority} Fetching "${sms.name}"...`);
-            
+
             const statsResult = await this.fetchAndStoreSmsStats(client, sms.localId, sms.id);
-            
+
             // Backfill stats summary
             backfillData.campaigns[sms.id] = {
               name: sms.name,
@@ -1800,11 +1800,11 @@ class MauticAPIService {
             totalStatsCreated += statsResult.created || 0;
             totalStatsSkipped += statsResult.skipped || 0;
             successfulCampaigns.push(sms.name);
-            
+
             console.log(`       ✅ ${statsResult.created || 0} created, ${statsResult.skipped || 0} skipped`);
           } catch (statsErr) {
             console.error(`   ${progress} ❌ ${statsErr.message}`);
-            
+
             // Backfill error info
             backfillData.campaigns[sms.id] = {
               name: sms.name,
@@ -1822,7 +1822,7 @@ class MauticAPIService {
           statsCreated: totalStatsCreated,
           statsSkipped: totalStatsSkipped
         };
-        
+
         try {
           fs.writeFileSync(backfillFile, JSON.stringify(backfillData, null, 2));
           console.log(`\n   💾 Backfill summary: ${backfillFile}`);
@@ -1917,7 +1917,7 @@ class MauticAPIService {
    * @param {Map} repliesMap - Map of leadId to reply data
    * @returns {Array} Transformed stats ready for database insertion
    */
-  async transformSmsStatsForDb(rawStats, mauticSmsId, localSmsId, mobileMap = new Map(), repliesMap = new Map()) {
+  async transformSmsStatsForDb(rawStats, mauticSmsId, localSmsId, mobileMap = new Map(), repliesMap = new Map(), campaignMessage) {
     const transformedStats = [];
 
     for (const stat of rawStats) {
@@ -1934,7 +1934,7 @@ class MauticAPIService {
 
         // Get mobile number from map
         const mobile = mobileMap.get(parseInt(leadId)) || null;
-        
+
         // Get reply data from map
         const replyData = repliesMap.get(parseInt(leadId)) || {};
         const replyText = replyData.reply || null;
@@ -1948,7 +1948,7 @@ class MauticAPIService {
           dateSent: dateSent ? new Date(dateSent) : null,
           isFailed: String(isFailed),
           mobile: mobile,
-          messageText: null, // Not available from stats API
+          messageText: campaignMessage, // Common campaign SMS message sent to all contacts
           replyText: replyText,
           replyCategory: replyCategory,
           repliedAt: repliedAt
@@ -1962,6 +1962,37 @@ class MauticAPIService {
   }
 
   /**
+   * Fetch the common SMS message sent to all leads of the SMS campaign
+   * The SMS message sent to first contact is same for all contacts accross the campaign
+   * @param {Object} client - Client configuration
+   * @param {number} mauticSmsId - mautic SMS campaign ID
+   * @param {number} firstLeadId - lead_id of the first lead of the SMS campaign
+   */
+  async fetchCampaignMessage(client, mauticSmsId, firstLeadId) {
+    try {
+      const apiClient = this.createClient(client);
+
+      const res = await apiClient.get(`/contacts/${firstLeadId}/activity`);
+
+      const events = res.data?.events || [];
+
+      const smsSentEvents = events.filter(e => e.event === 'sms.sent') || [];
+
+      // filter sms.sent events sent to this contact from this SMS campaign only
+      const filteredEvents = smsSentEvents.filter(smsSent => smsSent.details?.stat?.sms_id?.toString() === mauticSmsId.toString()) || [];
+
+      const smsMessages = filteredEvents.map(smsSent =>
+        smsSent.details?.stat?.message || ""
+      );
+
+      return smsMessages.find(smsMessage => smsMessage.trim() !== "") || ""; // return one message even if there are multiple messages
+
+    } catch (err) {
+      logger.error(`   ❌ Error fetching common SMS message: ${err.message}`);
+    }
+  }
+
+  /**
    * Fetch SMS delivery statistics for a specific campaign and store in database
    * Uses chunked fetching to handle large datasets
    * @param {Object} client - Client configuration
@@ -1972,10 +2003,10 @@ class MauticAPIService {
   async fetchAndStoreSmsStats(client, localSmsId, mauticSmsId, forceFull = false) {
     try {
       logger.info(`📊 Fetching SMS stats for campaign ${mauticSmsId}${forceFull ? ' [FORCE FULL]' : ''}`);
-      
+
       // Import SMS stats page manager for safe resumption
       const { default: smsPageManager } = await import('./smsStatsPageManager.js');
-      
+
       // ✅ Check if we already have stats for this campaign (incremental sync)
       if (!forceFull) {
         const existingCount = await prisma.mauticSmsStat.count({
@@ -1984,36 +2015,36 @@ class MauticAPIService {
 
         if (existingCount > 0) {
           logger.info(`   ⏭️  Skipping - ${existingCount} stats already synced`);
-          return { 
-            created: 0, 
-            skipped: existingCount, 
+          return {
+            created: 0,
+            skipped: existingCount,
             total: existingCount,
             message: 'Already synced'
           };
         }
       }
-      
+
       // 🔄 Resume from orphaned pages if process was interrupted
       const orphanedPages = smsPageManager.recoverOrphanedPages();
       let totalCreated = 0;
       let totalSkipped = 0;
-      
+
       if (orphanedPages.length > 0) {
         logger.info(`\n🔄 RESUMING: ${orphanedPages.length} orphaned pages...`);
-        
+
         const { default: smsService } = await import('./smsService.js');
-        
+
         for (const orphaned of orphanedPages) {
           try {
             // Orphaned pages contain pre-transformed data
             const storeResult = await smsService.storeTransformedSmsStats(orphaned.data);
-            
+
             totalCreated += storeResult.created || 0;
             totalSkipped += storeResult.skipped || 0;
-            
+
             // Don't delete orphaned page after successful processing (keep for later, do not delete)
             // smsPageManager.deletePage(orphaned.pageNumber);
-             
+
           } catch (e) {
             logger.error(`   ❌ Failed page ${orphaned.pageNumber}: ${e.message}`);
           }
@@ -2028,7 +2059,7 @@ class MauticAPIService {
       let tempStart = 0;
       const tempLimit = 5000;
       let hasMoreLeads = true;
-      
+
       while (hasMoreLeads) {
         try {
           const resp = await this.retryWithBackoff(() =>
@@ -2042,21 +2073,21 @@ class MauticAPIService {
               }
             })
           );
-          
+
           let stats = [];
           if (Array.isArray(resp.data?.stats)) {
             stats = resp.data.stats;
           } else if (resp.data?.stats && typeof resp.data.stats === 'object') {
             stats = Object.values(resp.data.stats);
           }
-          
+
           if (stats.length === 0) {
             hasMoreLeads = false;
           } else {
             const leadIds = stats.map(s => s.lead_id || s.leadId).filter(Boolean);
             allLeadIds.push(...leadIds);
             tempStart += stats.length;
-            
+
             if (stats.length < tempLimit) {
               hasMoreLeads = false;
             }
@@ -2066,18 +2097,21 @@ class MauticAPIService {
           hasMoreLeads = false;
         }
       }
-      
+
       logger.info(`   ✅ Found ${allLeadIds.length} total lead IDs for this campaign`);
 
       // ✅ STEP 2: FETCH MOBILE NUMBERS AND REPLIES FOR ALL LEADS
       let mobileMap = new Map();
       let repliesMap = new Map();
-      
+      let campaignMessage = "";
+
       if (allLeadIds.length > 0) {
         logger.info(`   📱 Fetching mobiles and replies for ${allLeadIds.length} leads...`);
         try {
           mobileMap = await this.fetchMobileNumbersBulk(client, allLeadIds);
           repliesMap = await this.fetchSmsRepliesBulk(client, allLeadIds);
+          const firstLeadId = parseInt(allLeadIds[0]);
+          campaignMessage = await this.fetchCampaignMessage(client, mauticSmsId, firstLeadId);
           logger.info(`   ✅ Bulk fetch complete: ${mobileMap.size} mobiles, ${repliesMap.size} replies`);
         } catch (bulkErr) {
           logger.warn(`   ⚠️  Bulk fetch failed: ${bulkErr.message}`);
@@ -2127,11 +2161,14 @@ class MauticAPIService {
           }
 
           // ✅ TRANSFORM STATS TO DB FORMAT (with mobile and replies)
-          const transformedStats = await this.transformSmsStatsForDb(stats, mauticSmsId, localSmsId, mobileMap, repliesMap);
-          
+          const transformedStats = await this.transformSmsStatsForDb(stats, mauticSmsId, localSmsId, mobileMap, repliesMap, campaignMessage);
+          console.log("CAMPAIGN MESSAGE", campaignMessage);
+          console.log("TRANFORMED STATS", transformedStats[0]);
+
+
           // 💾 SAVE TRANSFORMED DATA TO DISK (not raw Mautic response)
           const saveSuccess = smsPageManager.savePage(pageNumber, transformedStats);
-          
+
           if (!saveSuccess) {
             hasMore = false;
             break;
@@ -2140,7 +2177,7 @@ class MauticAPIService {
           // 📝 INSERT INTO DATABASE (use transformed  data)
           const { default: smsService } = await import('./smsService.js');
           const storeResult = await smsService.storeTransformedSmsStats(transformedStats);
-          
+
           totalCreated += storeResult.created || 0;
           totalSkipped += storeResult.skipped || 0;
 
@@ -2170,7 +2207,7 @@ class MauticAPIService {
       if (allStats.length === 0 && orphanedPages.length === 0) {
         return { created: 0, skipped: 0, total: 0 };
       }
-      
+
       return {
         created: totalCreated,
         skipped: totalSkipped,
@@ -2263,17 +2300,17 @@ class MauticAPIService {
   async fetchMobileNumbersBulk(client, leadIds) {
     try {
       const uniqueLeadIds = new Set(leadIds.map(id => parseInt(id)).filter(id => id > 0));
-      
+
       if (uniqueLeadIds.size === 0) {
         logger.warn(`   ⚠️  No valid lead IDs provided for bulk mobile fetch`);
         return new Map();
       }
 
       logger.info(`📱 Fetching mobile numbers in BULK (parallel) for ${uniqueLeadIds.size} leads...`);
-      
+
       const apiClient = this.createClient(client);
       const mobileMap = new Map();
-      
+
       // STEP 1: Get total contact count (first request)
       const firstReq = await this.retryWithBackoff(() =>
         apiClient.get('/contacts', {
@@ -2283,7 +2320,7 @@ class MauticAPIService {
           }
         })
       );
-      
+
       const total = firstReq.data?.total || 0;
       if (total === 0) {
         logger.warn(`   ⚠️  No contacts found in Mautic`);
@@ -2308,17 +2345,17 @@ class MauticAPIService {
             activeRequests++;
 
             const url = `/contacts?start=${start}&limit=${pageSize}&search=!is:anonymous`;
-            
+
             this.retryWithBackoff(() => apiClient.get(url))
               .then(res => {
                 results[pageIndex] = res.data?.contacts || {};
                 activeRequests--;
                 finishedPages++;
-                
+
                 // Show progress
                 const progress = ((finishedPages / totalPages) * 100).toFixed(1);
                 process.stdout.write(`\r   ⚡ Progress: ${progress}% (${finishedPages}/${totalPages})`);
-                
+
                 if (finishedPages === totalPages) {
                   console.log();
                   resolve();
@@ -2340,7 +2377,7 @@ class MauticAPIService {
       // STEP 3: Extract mobiles from fetched contacts
       let totalProcessed = 0;
       let foundCount = 0;
-      
+
       for (const contactsObj of results) {
         if (!contactsObj || typeof contactsObj !== 'object') continue;
 
@@ -2391,17 +2428,17 @@ class MauticAPIService {
   async fetchSmsRepliesBulk(client, leadIds) {
     try {
       const uniqueLeadIds = new Set(leadIds.map(id => parseInt(id)).filter(id => id > 0));
-      
+
       if (uniqueLeadIds.size === 0) {
         logger.warn(`   ⚠️  No valid lead IDs provided for bulk reply fetch`);
         return new Map();
       }
 
       logger.info(`💬 Fetching SMS replies in BULK (parallel) for ${uniqueLeadIds.size} leads...`);
-      
+
       const apiClient = this.createClient(client);
       const repliesMap = new Map();
-      
+
       // STEP 1: Get total reply count (first request)
       const firstReq = await this.retryWithBackoff(() =>
         apiClient.get('/stats/lead_event_log', {
@@ -2413,7 +2450,7 @@ class MauticAPIService {
           }
         })
       );
-      
+
       const total = firstReq.data?.total || 0;
       if (total === 0) {
         logger.warn(`   ⚠️  No SMS replies found`);
@@ -2452,11 +2489,11 @@ class MauticAPIService {
                 results[pageIndex] = res.data?.stats || {};
                 activeRequests--;
                 finishedPages++;
-                
+
                 // Show progress
                 const progress = ((finishedPages / totalPages) * 100).toFixed(1);
                 process.stdout.write(`\r   ⚡ Progress: ${progress}% (${finishedPages}/${totalPages})`);
-                
+
                 if (finishedPages === totalPages) {
                   console.log();
                   resolve();
@@ -2478,7 +2515,7 @@ class MauticAPIService {
       // STEP 3: Extract replies from fetched data
       let totalProcessed = 0;
       let foundCount = 0;
-      
+
       for (const statsObj of results) {
         if (!statsObj || typeof statsObj !== 'object') continue;
 
@@ -2492,8 +2529,8 @@ class MauticAPIService {
           let replyMessage = 'STOP';
           if (stat.properties) {
             try {
-              const parsed = typeof stat.properties === 'string' 
-                ? JSON.parse(stat.properties) 
+              const parsed = typeof stat.properties === 'string'
+                ? JSON.parse(stat.properties)
                 : stat.properties;
               replyMessage = parsed.message || parsed.body || parsed.text || stat.properties || 'STOP';
             } catch {
@@ -2535,12 +2572,12 @@ class MauticAPIService {
       logger.info(`Fetching mobile numbers for ${uniqueLeadIds.length} unique leads (sequential)...`);
 
       const mobileMap = new Map();
-      
+
       for (let i = 0; i < uniqueLeadIds.length; i++) {
         const leadId = uniqueLeadIds[i];
         const contact = await this.fetchContactDetails(client, leadId);
         mobileMap.set(leadId, contact.mobile);
-        
+
         // Log progress every 50 leads
         if ((i + 1) % 50 === 0 || i + 1 === uniqueLeadIds.length) {
           logger.info(`   Processed ${i + 1}/${uniqueLeadIds.length} leads...`);
