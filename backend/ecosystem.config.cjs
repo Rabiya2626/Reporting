@@ -20,7 +20,8 @@ module.exports = {
 
       instances: 1,
       exec_mode: "fork",
-      max_memory_restart: "1G",
+      max_memory_restart: "3G",  // Increased from 1G to handle large sync operations
+      node_args: "--max-old-space-size=3072",  // Allow Node.js to use 3GB heap
     },
   ],
 };
