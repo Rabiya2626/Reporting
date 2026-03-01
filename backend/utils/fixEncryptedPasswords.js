@@ -14,7 +14,7 @@
 
 import 'dotenv/config';
 import prisma from '../prisma/client.js';
-import encryptionService from '../modules/mautic/services/encryption.js';
+import encryptionService from '../modules/mautic/encryption.js';
 import readline from 'readline';
 
 const rl = readline.createInterface({

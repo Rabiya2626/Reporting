@@ -1,4 +1,4 @@
-import prisma from '../../../prisma/client.js';
+import prisma from '../../../../prisma/client.js';
 
 /**
  * Service for handling aggregated email report stats

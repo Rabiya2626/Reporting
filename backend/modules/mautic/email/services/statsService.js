@@ -1,5 +1,5 @@
-import prisma from '../../../prisma/client.js';
-import logger from '../../../utils/logger.js';
+import prisma from '../../../../prisma/client.js';
+import logger from '../../../../utils/logger.js';
 
 class StatsService {
   static normalizeRate(value) {

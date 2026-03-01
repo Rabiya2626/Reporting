@@ -4,7 +4,7 @@
  * Matching priority: Full name > Partial word > Acronym
  */
 
-import logger from '../../../utils/logger.js';
+import logger from '../../../../utils/logger.js';
 
 class CampaignGroupingService {
   /**

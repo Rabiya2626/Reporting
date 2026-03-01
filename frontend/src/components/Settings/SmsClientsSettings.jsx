@@ -274,7 +274,6 @@ const SmsClientsSettings = () => {
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Client URL</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Username</th>
-                      <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">SMS Count</th>
                       <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Status</th>
                       <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Actions</th>
                     </tr>
@@ -317,11 +316,6 @@ const SmsClientsSettings = () => {
                               </>
                             )}
                           </div>
-                        </td>
-                        <td className="px-4 py-3 text-center">
-                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                            {client.smsCount || 0}
-                          </span>
                         </td>
                         <td className="px-4 py-3 text-center">
                           {client.isActive ? (
