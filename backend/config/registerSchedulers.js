@@ -1,6 +1,6 @@
 import schedulerService from '../services/schedulerService.js';
 import DropCowboyScheduler from '../modules/dropCowboy/services/schedulerService.js';
-import MauticScheduler from '../modules/mautic/services/schedulerService.js';
+import MauticScheduler from '../modules/mautic/schedulerService.js';
 import logger from '../utils/logger.js';
 
 /**

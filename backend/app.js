@@ -24,7 +24,7 @@ import "./modules/vicidialer/cron/sync.cron.js"; // Initialize Vicidial sync cro
 
 // Module routes
 import dropCowboyRoutes from './modules/dropCowboy/routes/api.js';
-import mauticRoutes from './modules/mautic/routes/api.js';
+import mauticRoutes from './modules/mautic/email/routes/api.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

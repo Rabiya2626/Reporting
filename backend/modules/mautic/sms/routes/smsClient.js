@@ -1,11 +1,11 @@
 import express from 'express';
 import axios from 'axios';
-import prisma from '../../../prisma/client.js';
-import encryptionService from '../services/encryption.js';
-import mauticAPIService from '../services/mauticAPI.js';
+import prisma from '../../../../prisma/client.js';
+import encryptionService from '../../encryption.js';
+import mauticAPIService from '../../mauticAPI.js';
 import smsService from '../services/smsService.js';
 import smsSyncService from '../services/smsSyncService.js';
-import logger from '../../../utils/logger.js';
+import logger from '../../../../utils/logger.js';
 
 const router = express.Router();
 

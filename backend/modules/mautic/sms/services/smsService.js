@@ -1,5 +1,5 @@
-import prisma from '../../../prisma/client.js';
-import logger from '../../../utils/logger.js';
+import prisma from '../../../../prisma/client.js';
+import logger from '../../../../utils/logger.js';
 import campaignGrouping from './campaignGrouping.js';
 
 class SmsService {
@@ -859,7 +859,7 @@ class SmsService {
 
         if (smsRecord?.client) {
           client = smsRecord.client;
-          const mauticAPI = (await import('./mauticAPI.js')).default;
+          const mauticAPI = (await import('../../mauticAPI.js')).default;
 
           // ✅ Use NEW BULK fetch for mobiles (parallel - 50 concurrent)
           try {

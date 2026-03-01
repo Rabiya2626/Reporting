@@ -1,7 +1,7 @@
 import cron from 'node-cron';
 import mauticAPI from './mauticAPI.js';
-import dataService from './dataService.js';
-import prisma from '../../../prisma/client.js';
+import dataService from './email/services/dataService.js';
+import prisma from '../../prisma/client.js';
 
 class MauticSchedulerService {
   constructor() {

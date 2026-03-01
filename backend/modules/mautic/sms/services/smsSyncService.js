@@ -1,5 +1,5 @@
-import prisma from '../../../prisma/client.js';
-import logger from '../../../utils/logger.js';
+import prisma from '../../../../prisma/client.js';
+import logger from '../../../../utils/logger.js';
 import axios from 'axios';
 import https from 'https';
 

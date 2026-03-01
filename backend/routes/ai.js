@@ -2,7 +2,7 @@ import express from "express";
 import prisma from "../prisma/client.js";
 import { authenticate, requireFullAccess, hasFullAccess, userHasPermission } from "../middleware/auth.js";
 import logger from "../utils/logger.js";
-import encryptionService from "../modules/mautic/services/encryption.js";
+import encryptionService from "../modules/mautic/encryption.js";
 
 const router = express.Router();
 

@@ -1,20 +1,20 @@
-import logger from '../../../utils/logger.js';
+import logger from '../../../../utils/logger.js';
 import express from "express";
-import mauticAPI from "../services/mauticAPI.js";
+import mauticAPI from "../../mauticAPI.js";
 import dataService from "../services/dataService.js";
 import statsService from "../services/statsService.js";
-import smsService from "../services/smsService.js";
-import MauticSchedulerService from "../services/schedulerService.js";
-import encryptionService from "../services/encryption.js";
-import prisma from "../../../prisma/client.js";
+import smsService from "../../sms/services/smsService.js";
+import MauticSchedulerService from "../../schedulerService.js";
+import encryptionService from "../../encryption.js";
+import prisma from "../../../../prisma/client.js";
 import {
   notifyMauticSyncCompleted,
   notifyMauticSyncFailed,
-} from "../../../utils/emailHelper.js";
-import DropCowboyDataService from "../../dropCowboy/services/dataService.js";
-import DropCowboyScheduler from "../../dropCowboy/services/schedulerService.js";
-import { authenticate, hasFullAccess, getAccessibleClientIds } from '../../../middleware/auth.js';
-import smsClientRoutes from './smsClient.js';
+} from "../../../../utils/emailHelper.js";
+import DropCowboyDataService from "../../../dropCowboy/services/dataService.js";
+import DropCowboyScheduler from "../../../dropCowboy/services/schedulerService.js";
+import { authenticate, hasFullAccess, getAccessibleClientIds } from '../../../../middleware/auth.js';
+import smsClientRoutes from '../../sms/routes/smsClient.js';
 
 const router = express.Router();
 const schedulerService = new MauticSchedulerService();

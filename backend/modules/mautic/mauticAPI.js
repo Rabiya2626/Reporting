@@ -6,8 +6,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 // pLimit removed - no longer using concurrency, pure sequential processing
-import prisma from '../../../prisma/client.js';
-import logger from '../../../utils/logger.js';
+import prisma from '../../prisma/client.js';
+import logger from '../../utils/logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -426,7 +426,7 @@ class MauticAPIService {
    * @param {Array} emails - Array of email objects (must contain .id)
    */
   async fetchAllEmailClickStats(client, emails) {
-    const { default: dataService } = await import('./dataService.js');
+    const { default: dataService } = await import('./email/services/dataService.js');
     try {
       if (!emails || emails.length === 0) return { success: true, created: 0 };
 
@@ -781,7 +781,7 @@ class MauticAPIService {
       const clickRows = [];
 
       // Import dataService to save click trackables incrementally
-      const { default: dataService } = await import('./dataService.js');
+      const { default: dataService } = await import('./email/services/dataService.js');
 
       // Process in batches of 10 concurrently
       const batchSize = 10;
@@ -953,7 +953,7 @@ class MauticAPIService {
  */
   async fetchReport(client) {
     // Import dataService here to avoid circular dependencies
-    const { default: dataService } = await import('./dataService.js');
+    const { default: dataService } = await import('./email/services/dataService.js');
 
     try {
       const apiClient = this.createClient(client);
@@ -1126,7 +1126,7 @@ class MauticAPIService {
    * @returns {Object} Fetch results
    */
   async fetchHistoricalReports(client, fromDate, toDate, limit = 200000) {
-    const { default: dataService } = await import('./dataService.js');
+    const { default: dataService } = await import('./email/services/dataService.js');
     try {
       const apiClient = this.createClient(client);
       const reportId = client.reportId;
@@ -1331,7 +1331,7 @@ class MauticAPIService {
         // Persist SMS campaigns to DB with smart categorization
         if (smsCampaigns && smsCampaigns.length > 0) {
           try {
-            const { default: smsService } = await import('./smsService.js');
+            const { default: smsService } = await import('./sms/services/smsService.js');
 
             // 🧹 CLEANUP: Fix orphaned smsClientId references before sync to prevent foreign key violations
             await smsService.cleanupOrphanedReferences();
@@ -1544,7 +1544,7 @@ class MauticAPIService {
 
       // Persist emails to DB (upsert will update sentCount, readCount, etc.)
       try {
-        const { default: dataService } = await import('./dataService.js');
+        const { default: dataService } = await import('./email/services/dataService.js');
         const saveRes = await dataService.saveEmails(client.id, emails);
         console.log(`   ✅ Saved emails to DB: created=${saveRes.created} updated=${saveRes.updated}`);
       } catch (saveErr) {
@@ -1554,7 +1554,7 @@ class MauticAPIService {
       // ✅ Persist campaigns to DB (only on initial sync)
       if (campaigns && campaigns.length > 0) {
         try {
-          const { default: dataService } = await import('./dataService.js');
+          const { default: dataService } = await import('./email/services/dataService.js');
           const campSaveRes = await dataService.saveCampaigns(client.id, campaigns);
           console.log(`   ✅ Saved campaigns to DB: created=${campSaveRes.created} updated=${campSaveRes.updated}`);
         } catch (campErr) {
@@ -1565,7 +1565,7 @@ class MauticAPIService {
       // ✅ Persist segments to DB (only on initial sync)
       if (segments && segments.length > 0) {
         try {
-          const { default: dataService } = await import('./dataService.js');
+          const { default: dataService } = await import('./email/services/dataService.js');
           const segSaveRes = await dataService.saveSegments(client.id, segments);
           console.log(`   ✅ Saved segments to DB: created=${segSaveRes.created} updated=${segSaveRes.updated}`);
         } catch (segErr) {
@@ -1707,7 +1707,7 @@ class MauticAPIService {
       // ✅ Persist SMS campaigns to DB - With smart categorization
       if (smsCampaigns && smsCampaigns.length > 0) {
         try {
-          const { default: smsService } = await import('./smsService.js');
+          const { default: smsService } = await import('./sms/services/smsService.js');
 
           // 🧹 CLEANUP: Fix orphaned smsClientId references before sync to prevent foreign key violations
           await smsService.cleanupOrphanedReferences();
@@ -2005,7 +2005,7 @@ class MauticAPIService {
       logger.info(`📊 Fetching SMS stats for campaign ${mauticSmsId}${forceFull ? ' [FORCE FULL]' : ''}`);
 
       // Import SMS stats page manager for safe resumption
-      const { default: smsPageManager } = await import('./smsStatsPageManager.js');
+      const { default: smsPageManager } = await import('./sms/services/smsStatsPageManager.js');
 
       // ✅ Check if we already have stats for this campaign (incremental sync)
       if (!forceFull) {
@@ -2032,7 +2032,7 @@ class MauticAPIService {
       if (orphanedPages.length > 0) {
         logger.info(`\n🔄 RESUMING: ${orphanedPages.length} orphaned pages...`);
 
-        const { default: smsService } = await import('./smsService.js');
+        const { default: smsService } = await import('./sms/services/smsService.js');
 
         for (const orphaned of orphanedPages) {
           try {
@@ -2175,7 +2175,7 @@ class MauticAPIService {
           }
 
           // 📝 INSERT INTO DATABASE (use transformed  data)
-          const { default: smsService } = await import('./smsService.js');
+          const { default: smsService } = await import('./sms/services/smsService.js');
           const storeResult = await smsService.storeTransformedSmsStats(transformedStats);
 
           totalCreated += storeResult.created || 0;
