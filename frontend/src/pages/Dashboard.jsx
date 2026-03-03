@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useAuth } from '../contexts/AuthContext.jsx'
 import axios from 'axios'
+import { toast } from 'react-toastify'
 import { 
   Users, FolderOpen, Activity, Mail, Phone, TrendingUp, TrendingDown,
   AlertTriangle, CheckCircle, Clock, RefreshCw, BarChart3, Zap,
@@ -22,6 +23,8 @@ const Dashboard = () => {
   const [stats, setStats] = useState({
     totalEmployees: 0,
     totalClients: 0,
+    activeClients: 0,
+    inactiveClients: 0,
     totalManagers: 0,
     totalAdmins: 0
   })
@@ -30,16 +33,20 @@ const Dashboard = () => {
   const [syncStatus, setSyncStatus] = useState({ mautic: null, dropCowboy: null, sms: null })
   const [syncProgress, setSyncProgress] = useState(null)
   const [insights, setInsights] = useState([])
+  const [isSyncing, setIsSyncing] = useState(false)
   const progressIntervalRef = useRef(null)
 
   const fetchSyncProgress = useCallback(async () => {
     try {
-      const response = await axios.get('/api/mautic/sync/progress')
+      // 🚀 OPTIMIZED: Consolidated sync progress endpoint
+      const response = await axios.get('/api/dashboard/sync-progress')
       if (response.data?.success) {
         setSyncProgress(response.data.data)
         if (!response.data.data.isActive && progressIntervalRef.current) {
           clearInterval(progressIntervalRef.current)
           progressIntervalRef.current = null
+          setIsSyncing(false)
+          // Note: Success toast is shown by button handler, not here
           fetchAllData()
         }
       }
@@ -68,12 +75,36 @@ const Dashboard = () => {
   const fetchAllData = async () => {
     setLoading(true)
     try {
-      await Promise.all([
-        fetchDashboardStats(),
-        fetchEmailMetrics(),
-        fetchVoicemailMetrics(),
-        fetchSyncStatus()
-      ])
+      // 🚀 OPTIMIZED: Single consolidated API call instead of 9 separate calls
+      const response = await axios.get('/api/dashboard/overview')
+      
+      if (response.data?.success && response.data?.data) {
+        const { stats, emailMetrics, voicemailMetrics, syncStatus: syncData } = response.data.data
+        
+        // Update all state at once
+        setStats(stats || {
+          totalEmployees: 0,
+          totalClients: 0,
+          activeClients: 0,
+          inactiveClients: 0,
+          totalManagers: 0,
+          totalAdmins: 0
+        })
+        
+        setEmailMetrics(emailMetrics || null)
+        setVoicemailMetrics(voicemailMetrics || null)
+        
+        setSyncStatus({
+          mautic: { data: syncData?.mautic || null },
+          dropCowboy: { data: syncData?.dropCowboy || null },
+          sms: { data: syncData?.sms || null }
+        })
+        
+        // Generate insights based on metrics
+        generateInsights(emailMetrics, voicemailMetrics)
+        
+        console.log(`✅ Dashboard data loaded in ${response.data.data.performanceMs}ms`)
+      }
     } catch (error) {
       console.error('Error fetching dashboard data:', error)
     } finally {
@@ -81,167 +112,43 @@ const Dashboard = () => {
     }
   }
 
-  const fetchDashboardStats = async () => {
-    try {
-      const requests = []
-      
-      if (canViewUsers()) {
-        requests.push(axios.get('/api/users').catch(() => ({ data: { users: [] } })))
-      } else {
-        requests.push(Promise.resolve({ data: { users: [] } }))
-      }
-      
-      requests.push(axios.get('/api/clients').catch(() => ({ data: [] })))
-      requests.push(axios.get('/api/mautic/clients').catch(() => ({ data: { data: [] } })))
-
-      const [usersRes, clientsRes, mauticRes] = await Promise.all(requests)
-
-      const users = usersRes.data.users || []
-      const clients = clientsRes.data || []
-      const mauticClients = mauticRes.data?.data || []
-
-      const isManager = (e) => {
-        if (!e?.customRoleId) {
-          return ['superadmin', 'admin', 'manager'].includes(e?.role)
-        }
-        return e?.customRole?.fullAccess || e?.customRole?.isTeamManager
-      }
-
-      const managerCount = users.filter(isManager).length
-      const employeeCount = users.filter(e => !isManager(e)).length
-      const adminCount = users.filter(e => e?.customRole?.fullAccess || (!e?.customRoleId && e?.role === 'admin')).length
-
-      let clientCount = mauticClients.length
-      if (!hasFullAccess()) {
-        clientCount = mauticClients.filter(c => {
-          const assignments = c.client?.assignments || []
-          return assignments.some(a => (a.userId || a.user?.id) === user.id) || 
-                 c.client?.createdById === user.id
-        }).length
-      }
-
-      setStats({
-        totalEmployees: hasFullAccess() ? employeeCount : 0,
-        totalClients: clientCount,
-        totalManagers: hasFullAccess() ? managerCount : 0,
-        totalAdmins: hasFullAccess() ? adminCount : 0
-      })
-    } catch (error) {
-      console.error('Error fetching stats:', error)
-    }
-  }
-
-  const fetchEmailMetrics = async () => {
-    try {
-      const response = await axios.get('/api/mautic/stats/overview')
-      if (response.data?.success && response.data?.data) {
-        const data = response.data.data
-        const metrics = {
-          totalSent: data.stats?.sent || 0,
-          totalRead: data.stats?.read || 0,
-          totalClicked: data.stats?.clicked || 0,
-          totalUniqueClicks: data.clickSummary?.totalUniqueClicks || 0,
-          totalBounced: data.stats?.bounced || 0,
-          totalUnsubscribed: data.stats?.unsubscribed || 0,
-          avgReadRate: data.stats?.avgOpenRate || 0,
-          avgClickRate: data.stats?.avgClickRate || 0,
-          avgUnsubscribeRate: data.stats?.avgUnsubscribeRate || 0,
-          openRate: data.stats?.openRate || 0,
-          clickRate: data.stats?.clickRate || 0,
-          bounceRate: data.stats?.bounceRate || 0,
-          unsubscribeRate: data.stats?.unsubscribeRate || 0,
-          topEmails: data.topEmails || [],
-          overview: data.overview,
-          clients: data.clients || []
-        }
-        setEmailMetrics(metrics)
-        generateInsights(metrics, 'email')
-      }
-    } catch (error) {
-      console.error('Error fetching email metrics:', error)
-    }
-  }
-
-  const fetchVoicemailMetrics = async () => {
-    try {
-      const response = await axios.get('/api/dropcowboy/metrics')
-      if (response.data?.success) {
-        setVoicemailMetrics(response.data.data)
-        generateInsights(response.data.data, 'voicemail')
-      } else {
-        setVoicemailMetrics(null)
-      }
-    } catch (error) {
-      console.error('Error fetching voicemail metrics:', error)
-      setVoicemailMetrics(null)
-    }
-  }
-
-  const fetchSyncStatus = async () => {
-    try {
-      const [mauticRes, dropCowboyRes, smsRes] = await Promise.all([
-        axios.get('/api/mautic/sync/status').catch(() => ({ data: null })),
-        axios.get('/api/dropcowboy/sync-status').catch(() => ({ data: null })),
-        axios.get('/api/mautic/sms-clients/sync-status').catch(() => ({ data: null }))
-      ])
-      
-      setSyncStatus({
-        mautic: mauticRes.data,
-        dropCowboy: dropCowboyRes.data,
-        sms: smsRes.data
-      })
-    } catch (error) {
-      console.error('Error fetching sync status:', error)
-    }
-  }
-
-  const generateInsights = (data, type) => {
+  const generateInsights = (email, voicemail) => {
     const newInsights = []
     
-    if (type === 'email' && data) {
-      if (data.avgReadRate && parseFloat(data.avgReadRate) < 20) {
+    if (email && email.totalSent > 0) {
+      if (email.avgReadRate < 25) {
         newInsights.push({
-          id: 'email-open-rate',
           type: 'warning',
           title: 'Low Email Open Rates',
-          description: `Average open rate is ${data.avgReadRate}%. Consider optimizing subject lines.`,
+          description: `Average open rate is ${email.avgReadRate?.toFixed(2)}%. Consider optimizing subject lines.`,
           action: 'View Emails',
           link: '/services'
         })
       }
-      if (data.totalBounced > 100) {
+      if (email.bounceRate > 5) {
         newInsights.push({
-          id: 'email-bounce',
-          type: 'error',
+          type: 'alert',
           title: 'High Bounce Rate',
-          description: `${data.totalBounced} emails bounced. Review email list quality.`,
-          action: 'Review',
+          description: `Bounce rate is ${email.bounceRate}%. Clean your email list to improve deliverability.`,
+          action: 'View Details',
           link: '/services'
         })
       }
     }
     
-    if (type === 'voicemail' && data?.overall) {
-      const successRate = parseFloat(data.overall.averageSuccessRate || 0)
-      if (successRate < 70 && data.overall.totalSent > 0) {
+    if (voicemail?.overall && voicemail.overall.totalSent > 0) {
+      if (voicemail.overall.averageSuccessRate < 70) {
         newInsights.push({
-          id: 'voicemail-delivery',
           type: 'warning',
           title: 'Voicemail Delivery Issues',
-          description: `Only ${successRate}% delivery success. Check phone number quality.`,
+          description: `Only ${voicemail.overall.averageSuccessRate}% delivery success. Check phone number quality.`,
           action: 'View Records',
           link: '/services'
         })
       }
     }
-
-    if (newInsights.length > 0) {
-      setInsights(prev => {
-        const existingIds = new Set(newInsights.map(i => i.id))
-        const filtered = prev.filter(i => !existingIds.has(i.id))
-        return [...filtered, ...newInsights]
-      })
-    }
+    
+    setInsights(newInsights)
   }
 
   const getGreeting = () => {
@@ -637,12 +544,42 @@ const Dashboard = () => {
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <QuickActionButton 
               icon={RefreshCw} 
-              label="Sync All Data" 
-              onClick={() => {
-                axios.post('/api/mautic/sync/all').catch(() => {})
-                axios.post('/api/dropcowboy/fetch').catch(() => {})
-                setTimeout(fetchSyncProgress, 500)
-                fetchAllData()
+              label={isSyncing ? "Syncing..." : "Sync All Data"}
+              disabled={isSyncing}
+              onClick={async () => {
+                try {
+                  setIsSyncing(true)
+                  toast.info('Syncing Mautic automation clients and voicemail data...', { autoClose: 3000 })
+                  
+                  // 🚀 OPTIMIZED: Single consolidated sync endpoint
+                  const response = await axios.post('/api/dashboard/sync-all?syncDropCowboy=true')
+                  
+                  // Show specific results
+                  if (response.data?.success) {
+                    const mautic = response.data.data?.mautic
+                    const dropCowboy = response.data.data?.dropCowboy
+                    
+                    if (mautic?.success) {
+                      toast.success(mautic.message || 'Mautic automation clients synced!', { autoClose: 4000 })
+                    } else if (mautic?.message) {
+                      toast.warning(mautic.message, { autoClose: 4000 })
+                    }
+                    
+                    if (dropCowboy?.success) {
+                      toast.success('Voicemail data synced!', { autoClose: 3000 })
+                    }
+                    
+                    // Refresh dashboard data
+                    await fetchAllData()
+                  } else {
+                    toast.error('Sync completed with errors')
+                  }
+                } catch (error) {
+                  console.error('Error starting sync:', error)
+                  toast.error(error.response?.data?.error?.message || 'Failed to sync. Please try again.')
+                } finally {
+                  setIsSyncing(false)
+                }
               }}
             />
             <QuickActionButton 
@@ -886,12 +823,21 @@ const InsightCard = ({ insight, onClick }) => {
   )
 }
 
-const QuickActionButton = ({ icon: Icon, label, onClick }) => (
+const QuickActionButton = ({ icon: Icon, label, onClick, disabled = false }) => (
   <button
     onClick={onClick}
-    className="flex flex-col items-center gap-2 p-4 bg-gray-50 hover:bg-gray-100 rounded-lg transition-colors"
+    disabled={disabled}
+    className={`flex flex-col items-center gap-2 p-4 rounded-lg transition-colors ${
+      disabled 
+        ? 'bg-gray-100 cursor-not-allowed opacity-60' 
+        : 'bg-gray-50 hover:bg-gray-100'
+    }`}
   >
-    <Icon size={24} className="text-primary-600" />
+    {disabled ? (
+      <Loader2 size={24} className="text-primary-600 animate-spin" />
+    ) : (
+      <Icon size={24} className="text-primary-600" />
+    )}
     <span className="text-sm font-medium text-gray-700">{label}</span>
   </button>
 )

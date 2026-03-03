@@ -19,6 +19,7 @@ import notificationsRoutes from './routes/notifications.js';
 import settingsRoutes from './routes/settings.js';
 import rolesRoutes from './routes/roles.js';
 import aiRoutes from './routes/ai.js';
+import dashboardRoutes from './routes/dashboard.js';
 import vicidialAgentRoutes from './modules/vicidialer/routes/vicidialAgents.js';
 import "./modules/vicidialer/cron/sync.cron.js"; // Initialize Vicidial sync cron
 
@@ -170,6 +171,7 @@ export function createApp() {
   // ============================================
   
   app.use('/api/auth', authRoutes);
+  app.use('/api/dashboard', dashboardRoutes); // ⚡ Optimized consolidated dashboard endpoints
   app.use('/api/users', usersRoutes);
   app.use('/api/activities', activitiesRoutes);
   app.use('/api/clients', clientsRoutes);
