@@ -640,6 +640,7 @@ class DataService {
 
       await prisma.syncLog.create({
         data: {
+          source: 'dropcowboy',
           syncType: details.type || "manual",
           status: status,
           filesDownloaded: details.filesDownloaded || 0,
