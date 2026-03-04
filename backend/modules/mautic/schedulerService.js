@@ -261,9 +261,32 @@ class MauticSchedulerService {
       }
 
       const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+      const durationSeconds = Math.floor((Date.now() - startTime) / 1000);
       console.log(`\n✅ Mautic sync completed in ${duration}s`);
       console.log(`   Successful: ${results.successful}/${results.totalClients}`);
       console.log(`   Failed: ${results.failed}/${results.totalClients}`);
+
+      // Create sync log with completion status
+      try {
+        await prisma.mauticSyncLog.create({
+          data: {
+            status: results.successful > 0 ? 'success' : 'failed',
+            syncType: options.forceFull ? 'manual_full' : 'scheduled',
+            startedAt: new Date(startTime),
+            completedAt: new Date(),
+            durationSeconds: durationSeconds,
+            totalFetched: results.totalClients,
+            totalUpdated: results.successful,
+            totalInserted: 0,
+            errorCount: results.failed,
+            errorMessage: results.failed > 0 ? `${results.failed} client(s) failed to sync` : null,
+            triggeredBy: options.triggeredBy || 'system'
+          }
+        });
+        console.log(`📝 Created sync log: ${results.successful > 0 ? 'success' : 'failed'}`);
+      } catch (logError) {
+        console.warn('Failed to create sync log:', logError.message);
+      }
 
       // Clear progress tracking
       global.syncProgress = null;
@@ -279,6 +302,29 @@ class MauticSchedulerService {
       };
     } catch (error) {
       console.error('❌ Mautic sync error:', error);
+      
+      // Create sync log with error status
+      try {
+        const durationSeconds = Math.floor((Date.now() - startTime) / 1000);
+        await prisma.mauticSyncLog.create({
+          data: {
+            status: 'failed',
+            syncType: options.forceFull ? 'manual_full' : 'scheduled',
+            startedAt: new Date(startTime),
+            completedAt: new Date(),
+            durationSeconds: durationSeconds,
+            errorMessage: error.message?.substring(0, 500) || 'Unknown error',
+            errorCount: 1,
+            totalFetched: 0,
+            totalUpdated: 0,
+            totalInserted: 0,
+            triggeredBy: options.triggeredBy || 'system'
+          }
+        });
+        console.log(`📝 Created sync log: failed`);
+      } catch (logError) {
+        console.warn('Failed to create sync log with error:', logError.message);
+      }
       
       // Clear progress tracking
       global.syncProgress = null;
