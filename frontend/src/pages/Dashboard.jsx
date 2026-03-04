@@ -5,7 +5,7 @@ import { toast } from 'react-toastify'
 import { 
   Users, FolderOpen, Activity, Mail, Phone, TrendingUp, TrendingDown,
   AlertTriangle, CheckCircle, Clock, RefreshCw, BarChart3, Zap,
-  ArrowRight, Loader2, Server, CheckCircle2, XCircle, Pause
+  ArrowRight, Loader2, XCircle
 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { 
@@ -31,46 +31,12 @@ const Dashboard = () => {
   const [emailMetrics, setEmailMetrics] = useState(null)
   const [voicemailMetrics, setVoicemailMetrics] = useState(null)
   const [syncStatus, setSyncStatus] = useState({ mautic: null, dropCowboy: null, sms: null })
-  const [syncProgress, setSyncProgress] = useState(null)
   const [insights, setInsights] = useState([])
   const [isSyncing, setIsSyncing] = useState(false)
-  const progressIntervalRef = useRef(null)
-
-  const fetchSyncProgress = useCallback(async () => {
-    try {
-      // 🚀 OPTIMIZED: Consolidated sync progress endpoint
-      const response = await axios.get('/api/dashboard/sync-progress')
-      if (response.data?.success) {
-        setSyncProgress(response.data.data)
-        if (!response.data.data.isActive && progressIntervalRef.current) {
-          clearInterval(progressIntervalRef.current)
-          progressIntervalRef.current = null
-          setIsSyncing(false)
-          // Note: Success toast is shown by button handler, not here
-          fetchAllData()
-        }
-      }
-    } catch (error) {
-      console.error('Error fetching sync progress:', error)
-    }
-  }, [])
 
   useEffect(() => {
     fetchAllData()
-    fetchSyncProgress()
   }, [])
-
-  useEffect(() => {
-    if (syncProgress?.isActive && !progressIntervalRef.current) {
-      progressIntervalRef.current = setInterval(fetchSyncProgress, 3000)
-    }
-    return () => {
-      if (progressIntervalRef.current) {
-        clearInterval(progressIntervalRef.current)
-        progressIntervalRef.current = null
-      }
-    }
-  }, [syncProgress?.isActive, fetchSyncProgress])
 
   const fetchAllData = async () => {
     setLoading(true)
@@ -283,7 +249,6 @@ const Dashboard = () => {
               label="Autovation" 
               status={syncStatus.mautic?.data} 
               lastSync={syncStatus.mautic?.data?.lastUpdated || syncStatus.mautic?.data?.lastSync || syncStatus.mautic?.data?.lastSyncAt}
-              isActive={syncProgress?.isActive}
             />
             <SyncIndicator 
               label="Ringless Voicemail" 
@@ -296,9 +261,6 @@ const Dashboard = () => {
               lastSync={syncStatus.sms?.data?.lastSyncAt || syncStatus.sms?.data?.lastUpdated || syncStatus.sms?.data?.lastSync}
             />
           </div>
-          {syncProgress?.isActive && syncProgress?.clientList?.length > 0 && (
-            <SyncProgressPanel progress={syncProgress} />
-          )}
         </>
       )}
 
@@ -702,90 +664,6 @@ const SyncIndicator = ({ label, status, lastSync, isActive }) => {
           <Clock size={10} />
           {getDisplayText()}
         </div>
-      </div>
-    </div>
-  )
-}
-
-const SyncProgressPanel = ({ progress }) => {
-  const { clientList, totalClients, completedClients, elapsedSeconds, currentBatch, totalBatches } = progress
-  
-  const formatDuration = (seconds) => {
-    if (seconds < 60) return `${seconds}s`
-    const mins = Math.floor(seconds / 60)
-    const secs = seconds % 60
-    return `${mins}m ${secs}s`
-  }
-
-  const getStatusIcon = (status) => {
-    switch (status) {
-      case 'syncing':
-        return <Loader2 size={14} className="animate-spin text-blue-600" />
-      case 'completed':
-        return <CheckCircle2 size={14} className="text-green-600" />
-      case 'failed':
-        return <XCircle size={14} className="text-red-600" />
-      case 'pending':
-      default:
-        return <Pause size={14} className="text-gray-400" />
-    }
-  }
-
-  const getStatusColor = (status) => {
-    switch (status) {
-      case 'syncing': return 'bg-blue-50 border-blue-200'
-      case 'completed': return 'bg-green-50 border-green-200'
-      case 'failed': return 'bg-red-50 border-red-200'
-      default: return 'bg-gray-50 border-gray-200'
-    }
-  }
-
-  const progressPercent = totalClients > 0 ? Math.round((completedClients / totalClients) * 100) : 0
-
-  return (
-    <div className="card mb-6">
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-3">
-          <Server size={20} className="text-blue-600" />
-          <div>
-            <h3 className="text-lg font-semibold text-gray-900">Sync Progress</h3>
-            <p className="text-sm text-gray-500">
-              Batch {currentBatch}/{totalBatches} - {completedClients}/{totalClients} clients - {formatDuration(elapsedSeconds)}
-            </p>
-          </div>
-        </div>
-        <div className="text-right">
-          <div className="text-2xl font-bold text-blue-600">{progressPercent}%</div>
-        </div>
-      </div>
-
-      <div className="w-full bg-gray-200 rounded-full h-2 mb-4">
-        <div 
-          className="bg-blue-600 h-2 rounded-full transition-all duration-500" 
-          style={{ width: `${progressPercent}%` }}
-        />
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 max-h-64 overflow-y-auto">
-        {clientList.map((client) => (
-          <div 
-            key={client.clientId} 
-            className={`border rounded-lg p-3 ${getStatusColor(client.status)}`}
-          >
-            <div className="flex items-center gap-2 mb-1">
-              {getStatusIcon(client.status)}
-              <span className="font-medium text-gray-900 text-sm truncate">{client.clientName}</span>
-            </div>
-            <div className="text-xs text-gray-600 truncate">
-              {client.message || (client.status === 'pending' ? 'Waiting...' : '')}
-            </div>
-            {client.status === 'completed' && (
-              <div className="text-xs text-green-700 mt-1">
-                {client.emails || 0} emails, {client.campaigns || 0} campaigns, {client.emailReports || 0} reports
-              </div>
-            )}
-          </div>
-        ))}
       </div>
     </div>
   )
