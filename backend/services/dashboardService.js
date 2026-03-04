@@ -68,7 +68,7 @@ class DashboardService {
 
   /**
    * Get user statistics (employees, managers, admins)
-   * Optimized to return only counts, no full user data
+   * Optimized with groupBy aggregation - no full user data fetched
    */
   async _getUserStats(currentUser) {
     try {
@@ -81,41 +81,32 @@ class DashboardService {
         };
       }
 
-      // Fetch all active users with minimal data
-      const users = await prisma.user.findMany({
+      // Use groupBy for efficient aggregation
+      const userStats = await prisma.user.groupBy({
+        by: ['role'],
         where: { isActive: true },
-        select: {
-          id: true,
-          role: true,
-          customRoleId: true,
-          customRole: {
-            select: {
-              fullAccess: true,
-              isTeamManager: true
-            }
-          }
+        _count: true
+      });
+
+      const stats = {
+        totalEmployees: 0,
+        totalManagers: 0,
+        totalAdmins: 0
+      };
+
+      userStats.forEach(r => {
+        if (r.role === 'employee' || r.role === 'telecaller') {
+          stats.totalEmployees += r._count;
+        }
+        if (r.role === 'manager') {
+          stats.totalManagers += r._count;
+        }
+        if (r.role === 'admin' || r.role === 'superadmin') {
+          stats.totalAdmins += r._count;
         }
       });
 
-      // Calculate stats
-      const isManager = (user) => {
-        if (!user.customRoleId) {
-          return ['superadmin', 'admin', 'manager'].includes(user.role);
-        }
-        return user.customRole?.fullAccess || user.customRole?.isTeamManager;
-      };
-
-      const managerCount = users.filter(isManager).length;
-      const employeeCount = users.filter(u => !isManager(u)).length;
-      const adminCount = users.filter(u => 
-        u.customRole?.fullAccess || (!u.customRoleId && u.role === 'admin')
-      ).length;
-
-      return {
-        totalEmployees: employeeCount,
-        totalManagers: managerCount,
-        totalAdmins: adminCount
-      };
+      return stats;
     } catch (error) {
       logger.error('[Dashboard] Error fetching user stats:', error);
       return {
@@ -554,11 +545,29 @@ class DashboardService {
 
   /**
    * Get sync progress for all active syncs
+   * Reads from global.syncProgress for real-time tracking
    */
   async getSyncProgress() {
     try {
-      const progress = this.mauticScheduler.getSyncProgress();
-      
+      // Check for global sync progress first (real-time tracking)
+      const progress = global.syncProgress || null;
+
+      if (!progress) {
+        // No active sync - return default structure
+        return {
+          success: true,
+          data: {
+            isActive: false,
+            totalClients: 0,
+            completedClients: 0,
+            elapsedSeconds: 0,
+            currentBatch: 0,
+            totalBatches: 0,
+            clientList: []
+          }
+        };
+      }
+
       return {
         success: true,
         data: progress
@@ -573,6 +582,8 @@ class DashboardService {
           totalClients: 0,
           completedClients: 0,
           elapsedSeconds: 0,
+          currentBatch: 0,
+          totalBatches: 0,
           clientList: []
         }
       };
