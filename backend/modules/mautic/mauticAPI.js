@@ -1376,7 +1376,7 @@ class MauticAPIService {
           let totalStatsSkipped = 0;
           let successfulCampaigns = [];
 
-          // 🎯 PRIORITY: Fetch automation client SMS campaigns first
+          // 🎯 PRIORITY: Fetch autovation client SMS campaigns first
           const automationSmsCampaigns = [];
           const smsOnlySmsCampaigns = [];
 
@@ -1400,16 +1400,108 @@ class MauticAPIService {
           // Process automation SMS first (priority for UI display)
           const orderedCampaigns = [...automationSmsCampaigns, ...smsOnlySmsCampaigns];
 
-          // Process each SMS campaign sequentially
+          // Fetch mobile numbers and replies of all leads of this client in bulk once
+          // STEP 1: FETCH ALL LEAD IDs FOR EACH SMS CAMPAIGN FIRST
+          const apiClient = this.createClient(client);
+
+          logger.info(`   🔍 Gathering lead IDs for all ${smsCampaigns.length} SMS campaigns...`);
+
+          const allUniqueLeadIds = new Set();         // Unique IDs across all campaigns
+          const allCampaignsLeads = new Map();        // Map<campaignId, leads array>
+
+          for (const campaign of smsCampaigns) {
+            const mauticSmsId = campaign.id;
+            logger.info(`   🔍 Fetching lead IDs for campaign ${mauticSmsId}...`);
+
+            const campaignLeadIds = [];
+            const campaignLeads = [];
+
+            let tempStart = 0;
+            const tempLimit = 5000;
+            let hasMoreLeads = true;
+
+            while (hasMoreLeads) {
+              try {
+                const resp = await this.retryWithBackoff(() =>
+                  apiClient.get("/stats/sms_message_stats", {
+                    params: {
+                      "where[0][col]": "sms_id",
+                      "where[0][expr]": "eq",
+                      "where[0][val]": mauticSmsId,
+                      start: tempStart,
+                      limit: tempLimit,
+                      orderBy: "date_sent",
+                      orderByDir: "desc",
+                    },
+                  })
+                );
+
+                // Normalize response shape
+                const stats = Array.isArray(resp.data?.stats)
+                  ? resp.data.stats
+                  : resp.data?.stats && typeof resp.data.stats === "object"
+                    ? Object.values(resp.data.stats)
+                    : [];
+
+                if (!stats.length) {
+                  hasMoreLeads = false;
+                  break;
+                }
+
+                const leadIds = stats.map((s) => s.lead_id || s.leadId).filter(Boolean);
+                campaignLeadIds.push(...leadIds);
+                campaignLeads.push(...stats);
+                leadIds.forEach((id) => allUniqueLeadIds.add(id));
+
+                tempStart += stats.length;
+                if (stats.length < tempLimit) hasMoreLeads = false;
+              } catch (err) {
+                logger.error(`   ❌ Error fetching lead IDs for campaign ${mauticSmsId}: ${err.message}`);
+                hasMoreLeads = false;
+              }
+            }
+
+            logger.info(`   ✅ Found ${campaignLeadIds.length} leads for campaign ${mauticSmsId}`);
+            allCampaignsLeads.set(mauticSmsId, campaignLeads);
+          }
+
+          const allLeadIds = Array.from(allUniqueLeadIds);
+          logger.info(`   ✅ Total unique leads across all campaigns: ${allLeadIds.length}`);
+
+          // STEP 2: FETCH MOBILE NUMBERS AND REPLIES FOR ALL LEADS (once per client)
+          let mobileMap = new Map();
+          let repliesMap = new Map();
+
+          if (allLeadIds.length > 0) {
+            logger.info(`   📱 Fetching mobiles and replies for ${allLeadIds.length} leads (once per client)...`);
+            try {
+              mobileMap = await this.fetchMobileNumbersBulk(client, allLeadIds);
+              repliesMap = await this.fetchSmsRepliesBulk(client, allLeadIds);
+              logger.info(`   ✅ Bulk fetch complete: ${mobileMap.size} mobiles, ${repliesMap.size} replies`);
+            } catch (bulkErr) {
+              logger.warn(`   ⚠️  Bulk fetch failed: ${bulkErr.message}`);
+            }
+          }
+
+          // STEP 3: PROCESS EACH SMS CAMPAIGN SEQUENTIALLY
           for (let idx = 0; idx < orderedCampaigns.length; idx++) {
             const sms = orderedCampaigns[idx];
             const progress = `[${idx + 1}/${orderedCampaigns.length}]`;
-            const priority = sms.localId && automationSmsCampaigns.find(s => s.id === sms.id) ? '🎯' : '📱';
+            const priority = automationSmsCampaigns.find((s) => s.id === sms.id) ? "🎯" : "📱";
 
             try {
               console.log(`   ${progress} ${priority} Fetching "${sms.name}"...`);
 
-              const statsResult = await this.fetchAndStoreSmsStats(client, sms.localId, sms.id);
+              const campaignLeads = allCampaignsLeads.get(sms.id) || [];
+              console.log("CAMPAIGN LEADS", campaignLeads);
+              const statsResult = await this.fetchAndStoreSmsStats(
+                client,
+                sms.localId,
+                sms.id,
+                campaignLeads,
+                mobileMap,
+                repliesMap
+              );
 
               // Backfill only summary (detailed data is in page files)
               backfillData.campaigns[sms.id] = {
@@ -1417,7 +1509,7 @@ class MauticAPIService {
                 localId: sms.localId,
                 created: statsResult.created || 0,
                 skipped: statsResult.skipped || 0,
-                status: 'success'
+                status: "success",
               };
 
               totalStatsCreated += statsResult.created || 0;
@@ -1429,7 +1521,7 @@ class MauticAPIService {
               backfillData.campaigns[sms.id] = {
                 name: sms.name,
                 error: statsErr.message,
-                status: 'failed'
+                status: "failed",
               };
             }
           }
@@ -1444,7 +1536,8 @@ class MauticAPIService {
           };
 
           try {
-            fs.writeFileSync(backfillFile, JSON.stringify(backfillData, null, 2));
+            const summaryFile = path.join(backfillDir, `summary-${client.id}-${Date.now()}.json`);
+            fs.writeFileSync(summaryFile, JSON.stringify(backfillData, null, 2));
             console.log(`   💾 Backfill summary: ${backfillFile}`);
           } catch (backfillErr) {
             console.warn(`   ⚠️  Failed to save backfill summary:`, backfillErr.message);
@@ -1777,39 +1870,129 @@ class MauticAPIService {
         // Process automation SMS first (priority for UI display)
         const orderedCampaigns = [...automationSmsCampaigns, ...smsOnlySmsCampaigns];
 
-        // Process each SMS campaign sequentially to fetch stats
+        // Fetch mobile numbers and replies of all leads of this client in bulk once
+        // STEP 1: FETCH ALL LEAD IDs FOR EACH SMS CAMPAIGN FIRST
+        const apiClient = this.createClient(client);
+
+        logger.info(`   🔍 Gathering lead IDs for all ${smsCampaigns.length} SMS campaigns...`);
+
+        const allUniqueLeadIds = new Set();         // Unique IDs across all campaigns
+        const allCampaignsLeads = new Map();        // Map<campaignId, leads array>
+
+        for (const campaign of smsCampaigns) {
+          const mauticSmsId = campaign.id;
+          logger.info(`   🔍 Fetching lead IDs for campaign ${mauticSmsId}...`);
+
+          const campaignLeadIds = [];
+          const campaignLeads = [];
+
+          let tempStart = 0;
+          const tempLimit = 5000;
+          let hasMoreLeads = true;
+
+          while (hasMoreLeads) {
+            try {
+              const resp = await this.retryWithBackoff(() =>
+                apiClient.get("/stats/sms_message_stats", {
+                  params: {
+                    "where[0][col]": "sms_id",
+                    "where[0][expr]": "eq",
+                    "where[0][val]": mauticSmsId,
+                    start: tempStart,
+                    limit: tempLimit,
+                    orderBy: "date_sent",
+                    orderByDir: "desc",
+                  },
+                })
+              );
+
+              // Normalize response shape
+              const stats = Array.isArray(resp.data?.stats)
+                ? resp.data.stats
+                : resp.data?.stats && typeof resp.data.stats === "object"
+                  ? Object.values(resp.data.stats)
+                  : [];
+
+              if (!stats.length) {
+                hasMoreLeads = false;
+                break;
+              }
+
+              const leadIds = stats.map((s) => s.lead_id || s.leadId).filter(Boolean);
+              campaignLeadIds.push(...leadIds);
+              campaignLeads.push(...stats);
+              leadIds.forEach((id) => allUniqueLeadIds.add(id));
+
+              tempStart += stats.length;
+              if (stats.length < tempLimit) hasMoreLeads = false;
+            } catch (err) {
+              logger.error(`   ❌ Error fetching lead IDs for campaign ${mauticSmsId}: ${err.message}`);
+              hasMoreLeads = false;
+            }
+          }
+
+          logger.info(`   ✅ Found ${campaignLeadIds.length} leads for campaign ${mauticSmsId}`);
+          allCampaignsLeads.set(mauticSmsId, campaignLeads);
+        }
+
+        const allLeadIds = Array.from(allUniqueLeadIds);
+        logger.info(`   ✅ Total unique leads across all campaigns: ${allLeadIds.length}`);
+
+        // STEP 2: FETCH MOBILE NUMBERS AND REPLIES FOR ALL LEADS (once per client)
+        let mobileMap = new Map();
+        let repliesMap = new Map();
+
+        if (allLeadIds.length > 0) {
+          logger.info(`   📱 Fetching mobiles and replies for ${allLeadIds.length} leads (once per client)...`);
+          try {
+            mobileMap = await this.fetchMobileNumbersBulk(client, allLeadIds);
+            repliesMap = await this.fetchSmsRepliesBulk(client, allLeadIds);
+            logger.info(`   ✅ Bulk fetch complete: ${mobileMap.size} mobiles, ${repliesMap.size} replies`);
+          } catch (bulkErr) {
+            logger.warn(`   ⚠️  Bulk fetch failed: ${bulkErr.message}`);
+          }
+        }
+
+        // STEP 3: PROCESS EACH SMS CAMPAIGN SEQUENTIALLY
         for (let idx = 0; idx < orderedCampaigns.length; idx++) {
           const sms = orderedCampaigns[idx];
           const progress = `[${idx + 1}/${orderedCampaigns.length}]`;
-          const priority = automationSmsCampaigns.find(s => s.id === sms.id) ? '🎯' : '📱';
+          const priority = automationSmsCampaigns.find((s) => s.id === sms.id) ? "🎯" : "📱";
 
           try {
             console.log(`   ${progress} ${priority} Fetching "${sms.name}"...`);
 
-            const statsResult = await this.fetchAndStoreSmsStats(client, sms.localId, sms.id);
+            const campaignLeads = allCampaignsLeads.get(sms.id) || [];
+            console.log("CAMPAIGN LEADS", campaignLeads);
+            
+            const statsResult = await this.fetchAndStoreSmsStats(
+              client,
+              sms.localId,
+              sms.id,
+              campaignLeads,
+              mobileMap,
+              repliesMap
+            );
 
-            // Backfill stats summary
+            // Backfill only summary (detailed data is in page files)
             backfillData.campaigns[sms.id] = {
               name: sms.name,
               localId: sms.localId,
               created: statsResult.created || 0,
               skipped: statsResult.skipped || 0,
-              status: 'success'
+              status: "success",
             };
 
             totalStatsCreated += statsResult.created || 0;
             totalStatsSkipped += statsResult.skipped || 0;
             successfulCampaigns.push(sms.name);
-
             console.log(`       ✅ ${statsResult.created || 0} created, ${statsResult.skipped || 0} skipped`);
           } catch (statsErr) {
             console.error(`   ${progress} ❌ ${statsErr.message}`);
-
-            // Backfill error info
             backfillData.campaigns[sms.id] = {
               name: sms.name,
               error: statsErr.message,
-              status: 'failed'
+              status: "failed",
             };
           }
         }
@@ -1824,7 +2007,8 @@ class MauticAPIService {
         };
 
         try {
-          fs.writeFileSync(backfillFile, JSON.stringify(backfillData, null, 2));
+          const summaryFile = path.join(backfillDir, `summary-${client.id}-${Date.now()}.json`);
+          fs.writeFileSync(summaryFile, JSON.stringify(backfillData, null, 2));
           console.log(`\n   💾 Backfill summary: ${backfillFile}`);
         } catch (backfillErr) {
           console.warn(`   ⚠️  Failed to save backfill summary:`, backfillErr.message);
@@ -1998,10 +2182,15 @@ class MauticAPIService {
    * @param {Object} client - Client configuration
    * @param {number} localSmsId - Local SMS ID from mautic_sms table
    * @param {number} mauticSmsId - Mautic SMS campaign ID
+   * @param {Object} campaignLeads - Map containing all leads of the campaign
+   * @param {Object} mobileMap - Map containing mobile numbers of all leads
+   * @param {Object} repliesMap - Map containing replies by all leads
    * @returns {Promise<Object>} SMS stats storage results
    */
-  async fetchAndStoreSmsStats(client, localSmsId, mauticSmsId, forceFull = false) {
+  async fetchAndStoreSmsStats(client, localSmsId, mauticSmsId, campaignLeads, mobileMap, repliesMap, forceFull = false) {
     try {
+      console.log("CAMPAIGN LEADS GOT", campaignLeads);
+      
       logger.info(`📊 Fetching SMS stats for campaign ${mauticSmsId}${forceFull ? ' [FORCE FULL]' : ''}`);
 
       // Import SMS stats page manager for safe resumption
@@ -2055,62 +2244,24 @@ class MauticAPIService {
 
       // ✅ STEP 1: FETCH ALL LEAD IDs FOR THIS CAMPAIGN FIRST
       logger.info(`   🔍 Fetching all lead IDs for campaign ${mauticSmsId}...`);
-      const allLeadIds = [];
-      let tempStart = 0;
-      const tempLimit = 5000;
-      let hasMoreLeads = true;
+      // const allLeadIds = [];
+      // let tempStart = 0;
+      // const tempLimit = 5000;
+      // let hasMoreLeads = true;
+      // const campaignLeads = allLeads.filter(lead => lead.sms_id?.toString() === mauticSmsId.toString());
 
-      while (hasMoreLeads) {
-        try {
-          const resp = await this.retryWithBackoff(() =>
-            apiClient.get('/stats/sms_message_stats', {
-              params: {
-                'where[0][col]': 'sms_id',
-                'where[0][expr]': 'eq',
-                'where[0][val]': mauticSmsId,
-                start: tempStart,
-                limit: tempLimit
-              }
-            })
-          );
+      const campaignLeadIds = campaignLeads.map(lead => lead.lead_id);
 
-          let stats = [];
-          if (Array.isArray(resp.data?.stats)) {
-            stats = resp.data.stats;
-          } else if (resp.data?.stats && typeof resp.data.stats === 'object') {
-            stats = Object.values(resp.data.stats);
-          }
+      logger.info(`   ✅ Found ${campaignLeadIds.length} total lead IDs for this campaign`);
 
-          if (stats.length === 0) {
-            hasMoreLeads = false;
-          } else {
-            const leadIds = stats.map(s => s.lead_id || s.leadId).filter(Boolean);
-            allLeadIds.push(...leadIds);
-            tempStart += stats.length;
-
-            if (stats.length < tempLimit) {
-              hasMoreLeads = false;
-            }
-          }
-        } catch (err) {
-          logger.error(`   ❌ Error fetching lead IDs: ${err.message}`);
-          hasMoreLeads = false;
-        }
-      }
-
-      logger.info(`   ✅ Found ${allLeadIds.length} total lead IDs for this campaign`);
-
-      // ✅ STEP 2: FETCH MOBILE NUMBERS AND REPLIES FOR ALL LEADS
-      let mobileMap = new Map();
-      let repliesMap = new Map();
       let campaignMessage = "";
 
-      if (allLeadIds.length > 0) {
-        logger.info(`   📱 Fetching mobiles and replies for ${allLeadIds.length} leads...`);
+      if (campaignLeadIds.length > 0) {
+        logger.info(`   📱 Fetching message for ${campaignLeadIds.length} leads...`);
         try {
-          mobileMap = await this.fetchMobileNumbersBulk(client, allLeadIds);
-          repliesMap = await this.fetchSmsRepliesBulk(client, allLeadIds);
-          const firstLeadId = parseInt(allLeadIds[0]);
+          // mobileMap = await this.fetchMobileNumbersBulk(client, allLeadIds);
+          // repliesMap = await this.fetchSmsRepliesBulk(client, allLeadIds);
+          const firstLeadId = parseInt(campaignLeadIds[0]);
           campaignMessage = await this.fetchCampaignMessage(client, mauticSmsId, firstLeadId);
           logger.info(`   ✅ Bulk fetch complete: ${mobileMap.size} mobiles, ${repliesMap.size} replies`);
         } catch (bulkErr) {
@@ -2120,89 +2271,26 @@ class MauticAPIService {
 
       let allStats = [];
       let pageNumber = orphanedPages.length > 0 ? Math.max(...orphanedPages.map(p => p.pageNumber)) + 1 : 1;
-      let start = 0;
-      const limit = 5000;
-      let hasMore = true;
-      let fetchAttempts = 0;
-      const maxAttempts = 100;
+      // let start = 0;
+      // const limit = 5000;
+      // let hasMore = true;
+      // let fetchAttempts = 0;
+      // const maxAttempts = 100;
 
-      // Fetch stats in chunks and save each page
-      while (hasMore && fetchAttempts < maxAttempts) {
-        fetchAttempts++;
+      // ✅ TRANSFORM STATS TO DB FORMAT (with mobile and replies)
+      const transformedStats = await this.transformSmsStatsForDb(campaignLeads, mauticSmsId, localSmsId, mobileMap, repliesMap, campaignMessage);
 
-        try {
-          const response = await this.retryWithBackoff(() =>
-            apiClient.get('/stats/sms_message_stats', {
-              params: {
-                'where[0][col]': 'sms_id',
-                'where[0][expr]': 'eq',
-                'where[0][val]': mauticSmsId,
-                start: start,
-                limit: limit,
-                orderBy: 'date_sent',
-                orderByDir: 'desc'
-              }
-            })
-          );
+      // 💾 SAVE TRANSFORMED DATA TO DISK (not raw Mautic response)
+      const saveSuccess = smsPageManager.savePage(pageNumber, transformedStats);
 
-          // Handle both array and object responses
-          let stats = [];
-          if (Array.isArray(response.data?.stats)) {
-            stats = response.data.stats;
-          } else if (response.data?.stats && typeof response.data.stats === 'object') {
-            stats = Object.values(response.data.stats);
-          } else if (response.data?.data && Array.isArray(response.data.data)) {
-            stats = response.data.data;
-          }
+      // 📝 INSERT INTO DATABASE (use transformed  data)
+      const { default: smsService } = await import('./sms/services/smsService.js');
+      const storeResult = await smsService.storeTransformedSmsStats(transformedStats);
 
-          if (stats.length === 0) {
-            hasMore = false;
-            break;
-          }
+      totalCreated += storeResult.created || 0;
+      totalSkipped += storeResult.skipped || 0;
 
-          // ✅ TRANSFORM STATS TO DB FORMAT (with mobile and replies)
-          const transformedStats = await this.transformSmsStatsForDb(stats, mauticSmsId, localSmsId, mobileMap, repliesMap, campaignMessage);
-          console.log("CAMPAIGN MESSAGE", campaignMessage);
-          console.log("TRANFORMED STATS", transformedStats[0]);
-
-
-          // 💾 SAVE TRANSFORMED DATA TO DISK (not raw Mautic response)
-          const saveSuccess = smsPageManager.savePage(pageNumber, transformedStats);
-
-          if (!saveSuccess) {
-            hasMore = false;
-            break;
-          }
-
-          // 📝 INSERT INTO DATABASE (use transformed  data)
-          const { default: smsService } = await import('./sms/services/smsService.js');
-          const storeResult = await smsService.storeTransformedSmsStats(transformedStats);
-
-          totalCreated += storeResult.created || 0;
-          totalSkipped += storeResult.skipped || 0;
-
-          // ✅ Keep page files for recovery (don't delete)
-
-          // Check if we should continue
-          const total = response.data?.total || response.data?.totalResults || 0;
-          if (stats.length < limit) {
-            hasMore = false;
-          } else if (total > 0 && (allStats.length + stats.length) >= total) {
-            hasMore = false;
-          } else {
-            allStats.push(...stats);
-            start += stats.length;
-            pageNumber++;
-          }
-
-        } catch (chunkError) {
-          logger.error(`   Error fetching page ${pageNumber}:`, chunkError.message);
-          if (fetchAttempts === 1) {
-            throw chunkError;
-          }
-          hasMore = false;
-        }
-      }
+      allStats.push(...campaignLeads);
 
       if (allStats.length === 0 && orphanedPages.length === 0) {
         return { created: 0, skipped: 0, total: 0 };
