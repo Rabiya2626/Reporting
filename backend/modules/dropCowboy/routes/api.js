@@ -17,6 +17,123 @@ const dataService = new DataService();
 let isSyncInProgress = false;
 let currentSyncStartTime = null;
 
+// ============================================
+// DASHBOARD SUMMARY (Lightweight - for Dashboard page)
+// Returns aggregated stats without loading individual campaign records
+// ============================================
+router.get("/dashboard-summary", authenticate, async (req, res) => {
+  try {
+    // Filter by accessible clients if user doesn't have full access
+    let campaignIds = [];
+    
+    if (!hasFullAccess(req.user)) {
+      const accessibleClientIds = await getAccessibleClientIds(req.user.id, req.user);
+      const clients = await prisma.client.findMany({
+        where: { id: { in: accessibleClientIds } },
+        select: { name: true }
+      });
+      const clientNames = clients.map(c => c.name);
+      
+      const accessibleCampaigns = await prisma.dropCowboyCampaign.findMany({
+        where: { 
+          client: { in: clientNames, mode: 'insensitive' }
+        },
+        select: { campaignId: true }
+      });
+      campaignIds = accessibleCampaigns.map(c => c.campaignId);
+    } else {
+      // Get all campaign IDs linked to Mautic clients
+      const mauticClients = await prisma.client.findMany({
+        where: { clientType: "mautic" },
+        select: { id: true },
+      });
+      const mauticClientIds = mauticClients.map(c => c.id);
+      
+      const campaigns = await prisma.dropCowboyCampaign.findMany({
+        where: { clientId: { in: mauticClientIds } },
+        select: { campaignId: true },
+      });
+      campaignIds = campaigns.map(c => c.campaignId);
+    }
+
+    // If no accessible campaigns, return empty stats
+    if (campaignIds.length === 0) {
+      return res.json({
+        success: true,
+        data: {
+          totalCampaigns: 0,
+          totalSent: 0,
+          successfulDeliveries: 0,
+          avgSuccessRate: 0,
+          totalCost: 0,
+          lastUpdated: null
+        }
+      });
+    }
+
+    // Get aggregated stats using efficient queries
+    // ✅ Use SAME status logic as /records endpoint for consistency
+    const [totalCampaigns, totalSent, successCount, failureCount, costSum, lastRecord] = await Promise.all([
+      prisma.dropCowboyCampaign.count({
+        where: { campaignId: { in: campaignIds } }
+      }),
+      prisma.dropCowboyCampaignRecord.count({
+        where: { campaignId: { in: campaignIds } }
+      }),
+      prisma.dropCowboyCampaignRecord.count({
+        where: {
+          campaignId: { in: campaignIds },
+          status: { in: ["sent", "success", "delivered", "SENT", "SUCCESS", "DELIVERED"] }
+        }
+      }),
+      prisma.dropCowboyCampaignRecord.count({
+        where: {
+          campaignId: { in: campaignIds },
+          status: { in: ["failed", "failure", "error", "FAILED", "FAILURE", "ERROR"] }
+        }
+      }),
+      prisma.dropCowboyCampaignRecord.aggregate({
+        where: { campaignId: { in: campaignIds } },
+        _sum: { cost: true }
+      }),
+      prisma.dropCowboyCampaignRecord.findFirst({
+        where: { campaignId: { in: campaignIds } },
+        orderBy: { createdAt: 'desc' },
+        select: { createdAt: true }
+      })
+    ]);
+
+    const otherStatus = totalSent - successCount - failureCount;
+    const avgSuccessRate = totalSent > 0 ? (successCount / totalSent) * 100 : 0;
+    const totalCost = costSum._sum.cost || 0;
+
+    res.json({
+      success: true,
+      data: {
+        totalCampaigns,
+        totalSent,
+        successfulDeliveries: successCount,
+        failedDeliveries: failureCount,
+        otherStatus,
+        avgSuccessRate: parseFloat(avgSuccessRate.toFixed(2)),
+        totalCost: parseFloat(totalCost.toFixed(2)),
+        lastUpdated: lastRecord?.createdAt || null
+      }
+    });
+
+  } catch (error) {
+    logger.error("Error fetching DropCowboy dashboard summary", { 
+      error: error.message,
+      stack: error.stack 
+    });
+    res.status(500).json({ 
+      success: false, 
+      message: "Server error", 
+      error: error.message 
+    });
+  }
+});
+
 // Get dashboard metrics with optional filters and pagination - filtered by user's accessible clients
 router.get("/metrics", authenticate, async (req, res) => {
   try {
@@ -324,6 +441,9 @@ router.get("/records", async (req, res) => {
     const totalRecords = result.total || 0;
     const totalPages = Math.max(1, Math.ceil(totalRecords / limit));
 
+    // Get available clients for the dropdown
+    const availableClients = await dataService.getAvailableClients(clientIds);
+
     res.json({
       success: true,
       data: {
@@ -338,6 +458,7 @@ router.get("/records", async (req, res) => {
           otherStatusRate: 0,
           totalCampaignCost: 0,
         },
+        availableClients: availableClients || [],
         pagination: {
           currentPage: page,
           pageSize: limit,

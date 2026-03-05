@@ -18,16 +18,10 @@ const SmsSection = ({ clientId, refreshKey, accessibleClientIds }) => {
           // Fetch for specific client
           const response = await axios.get(`${baseUrl}/api/mautic/clients/${clientId}/sms`);
           setSmsCampaigns(response.data.data || []);
-        } else if (accessibleClientIds && accessibleClientIds.length > 0) {
-          // Fetch for all accessible clients
-          const requests = accessibleClientIds.map(id =>
-            axios.get(`${baseUrl}/api/mautic/clients/${id}/sms`).catch(() => ({ data: { data: [] } }))
-          );
-          const responses = await Promise.all(requests);
-          const allSms = responses.flatMap(r => r.data.data || []);
-          setSmsCampaigns(allSms);
         } else {
-          setSmsCampaigns([]);
+          // ✅ OPTIMIZED: Use overall-stats endpoint to get ALL SMS campaigns from ALL active clients in one query
+          const response = await axios.get(`${baseUrl}/api/mautic/clients/sms/overall-stats`);
+          setSmsCampaigns(response.data.data || []);
         }
       } catch (err) {
         console.error('Error fetching SMS campaigns:', err);
@@ -38,7 +32,7 @@ const SmsSection = ({ clientId, refreshKey, accessibleClientIds }) => {
     };
 
     fetchSmsCampaigns();
-  }, [clientId, refreshKey, accessibleClientIds]);
+  }, [clientId, refreshKey]);
 
   const totalSent = smsCampaigns.reduce((sum, sms) => sum + (sms.sentCount || 0), 0);
   const activeCampaigns = smsCampaigns.filter(sms => (sms.sentCount || 0) > 0).length;

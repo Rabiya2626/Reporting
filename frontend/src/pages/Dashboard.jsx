@@ -1,11 +1,10 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useAuth } from '../contexts/AuthContext.jsx'
 import axios from 'axios'
-import { toast } from 'react-toastify'
 import { 
   Users, FolderOpen, Activity, Mail, Phone, TrendingUp, TrendingDown,
   AlertTriangle, CheckCircle, Clock, RefreshCw, BarChart3, Zap,
-  ArrowRight, Loader2, XCircle
+  ArrowRight, Loader2, Server, CheckCircle2, XCircle, Pause
 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { 
@@ -13,6 +12,7 @@ import {
   BarChart, Bar, PieChart, Pie, Cell
 } from 'recharts'
 import { usePermissions } from '../utils/permissions'
+import clientService from '../services/clientService'
 
 const Dashboard = () => {
   const { user } = useAuth()
@@ -23,54 +23,58 @@ const Dashboard = () => {
   const [stats, setStats] = useState({
     totalEmployees: 0,
     totalClients: 0,
-    activeClients: 0,
-    inactiveClients: 0,
     totalManagers: 0,
     totalAdmins: 0
   })
   const [emailMetrics, setEmailMetrics] = useState(null)
   const [voicemailMetrics, setVoicemailMetrics] = useState(null)
   const [syncStatus, setSyncStatus] = useState({ mautic: null, dropCowboy: null, sms: null })
+  const [syncProgress, setSyncProgress] = useState(null)
   const [insights, setInsights] = useState([])
-  const [isSyncing, setIsSyncing] = useState(false)
+  const progressIntervalRef = useRef(null)
+
+  const fetchSyncProgress = useCallback(async () => {
+    try {
+      const response = await axios.get('/api/mautic/sync/progress')
+      if (response.data?.success) {
+        setSyncProgress(response.data.data)
+        if (!response.data.data.isActive && progressIntervalRef.current) {
+          clearInterval(progressIntervalRef.current)
+          progressIntervalRef.current = null
+          fetchAllData()
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching sync progress:', error)
+    }
+  }, [])
 
   useEffect(() => {
     fetchAllData()
+    fetchSyncProgress()
   }, [])
+
+  useEffect(() => {
+    if (syncProgress?.isActive && !progressIntervalRef.current) {
+      progressIntervalRef.current = setInterval(fetchSyncProgress, 3000)
+    }
+    return () => {
+      if (progressIntervalRef.current) {
+        clearInterval(progressIntervalRef.current)
+        progressIntervalRef.current = null
+      }
+    }
+  }, [syncProgress?.isActive, fetchSyncProgress])
 
   const fetchAllData = async () => {
     setLoading(true)
     try {
-      // 🚀 OPTIMIZED: Single consolidated API call instead of 9 separate calls
-      const response = await axios.get('/api/dashboard/overview')
-      
-      if (response.data?.success && response.data?.data) {
-        const { stats, emailMetrics, voicemailMetrics, syncStatus: syncData } = response.data.data
-        
-        // Update all state at once
-        setStats(stats || {
-          totalEmployees: 0,
-          totalClients: 0,
-          activeClients: 0,
-          inactiveClients: 0,
-          totalManagers: 0,
-          totalAdmins: 0
-        })
-        
-        setEmailMetrics(emailMetrics || null)
-        setVoicemailMetrics(voicemailMetrics || null)
-        
-        setSyncStatus({
-          mautic: { data: syncData?.mautic || null },
-          dropCowboy: { data: syncData?.dropCowboy || null },
-          sms: { data: syncData?.sms || null }
-        })
-        
-        // Generate insights based on metrics
-        generateInsights(emailMetrics, voicemailMetrics)
-        
-        console.log(`✅ Dashboard data loaded in ${response.data.data.performanceMs}ms`)
-      }
+      await Promise.all([
+        fetchDashboardStats(),
+        fetchEmailMetrics(),
+        fetchVoicemailMetrics(),
+        fetchSyncStatus()
+      ])
     } catch (error) {
       console.error('Error fetching dashboard data:', error)
     } finally {
@@ -78,43 +82,179 @@ const Dashboard = () => {
     }
   }
 
-  const generateInsights = (email, voicemail) => {
+  const fetchDashboardStats = async () => {
+    try {
+      const requests = []
+      
+      if (canViewUsers()) {
+        requests.push(axios.get('/api/users').catch(() => ({ data: { users: [] } })))
+      } else {
+        requests.push(Promise.resolve({ data: { users: [] } }))
+      }
+      
+      // ✅ Use optimized client service with caching
+      requests.push(clientService.getUnifiedClients().catch(() => []))
+
+      const [usersRes, clients] = await Promise.all(requests)
+
+      const users = usersRes.data.users || []
+
+      const isManager = (e) => {
+        if (!e?.customRoleId) {
+          return ['superadmin', 'admin', 'manager'].includes(e?.role)
+        }
+        return e?.customRole?.fullAccess || e?.customRole?.isTeamManager
+      }
+
+      const managerCount = users.filter(isManager).length
+      const employeeCount = users.filter(e => !isManager(e)).length
+      const adminCount = users.filter(e => e?.customRole?.fullAccess || (!e?.customRoleId && e?.role === 'admin')).length
+
+      // ✅ Unified endpoint already filters clients by user permissions
+      const clientCount = clients.length
+
+      setStats({
+        totalEmployees: hasFullAccess() ? employeeCount : 0,
+        totalClients: clientCount,
+        totalManagers: hasFullAccess() ? managerCount : 0,
+        totalAdmins: hasFullAccess() ? adminCount : 0
+      })
+    } catch (error) {
+      console.error('Error fetching stats:', error)
+    }
+  }
+
+  const fetchEmailMetrics = async () => {
+    try {
+      const response = await axios.get('/api/mautic/stats/overview')
+      if (response.data?.success && response.data?.data) {
+        const data = response.data.data
+        const metrics = {
+          totalSent: data.stats?.sent || 0,
+          totalRead: data.stats?.read || 0,
+          totalClicked: data.stats?.clicked || 0,
+          totalUniqueClicks: data.clickSummary?.totalUniqueClicks || 0,
+          totalBounced: data.stats?.bounced || 0,
+          totalUnsubscribed: data.stats?.unsubscribed || 0,
+          avgReadRate: data.stats?.avgOpenRate || 0,
+          avgClickRate: data.stats?.avgClickRate || 0,
+          avgUnsubscribeRate: data.stats?.avgUnsubscribeRate || 0,
+          openRate: data.stats?.openRate || 0,
+          clickRate: data.stats?.clickRate || 0,
+          bounceRate: data.stats?.bounceRate || 0,
+          unsubscribeRate: data.stats?.unsubscribeRate || 0,
+          topEmails: data.topEmails || [],
+          overview: data.overview,
+          clients: data.clients || []
+        }
+        setEmailMetrics(metrics)
+        generateInsights(metrics, 'email')
+      }
+    } catch (error) {
+      console.error('Error fetching email metrics:', error)
+    }
+  }
+
+  const fetchVoicemailMetrics = async () => {
+    try {
+      // ✅ Use lightweight dashboard-summary endpoint instead of full metrics
+      const response = await axios.get('/api/dropcowboy/dashboard-summary')
+      if (response.data?.success) {
+        // Transform the summary data to match expected format
+        const summary = response.data.data
+        setVoicemailMetrics({
+          overall: {
+            totalCampaigns: summary.totalCampaigns,
+            totalSent: summary.totalSent,
+            successfulDeliveries: summary.successfulDeliveries,
+            failedDeliveries: summary.failedDeliveries,
+            otherStatus: summary.otherStatus,
+            averageSuccessRate: summary.avgSuccessRate,
+            totalCost: summary.totalCost,
+          },
+          lastUpdated: summary.lastUpdated,
+          campaigns: [] // No individual campaign data on dashboard
+        })
+        generateInsights({
+          totalCampaigns: summary.totalCampaigns,
+          totalSent: summary.totalSent,
+          successfulDeliveries: summary.successfulDeliveries,
+          averageSuccessRate: summary.avgSuccessRate,
+        }, 'voicemail')
+      } else {
+        setVoicemailMetrics(null)
+      }
+    } catch (error) {
+      console.error('Error fetching voicemail metrics:', error)
+      setVoicemailMetrics(null)
+    }
+  }
+
+  const fetchSyncStatus = async () => {
+    try {
+      const [mauticRes, dropCowboyRes, smsRes] = await Promise.all([
+        axios.get('/api/mautic/sync/status').catch(() => ({ data: null })),
+        axios.get('/api/dropcowboy/sync-status').catch(() => ({ data: null })),
+        axios.get('/api/mautic/sms-clients/sync-status').catch(() => ({ data: null }))
+      ])
+      
+      setSyncStatus({
+        mautic: mauticRes.data,
+        dropCowboy: dropCowboyRes.data,
+        sms: smsRes.data
+      })
+    } catch (error) {
+      console.error('Error fetching sync status:', error)
+    }
+  }
+
+  const generateInsights = (data, type) => {
     const newInsights = []
     
-    if (email && email.totalSent > 0) {
-      if (email.avgReadRate < 25) {
+    if (type === 'email' && data) {
+      if (data.avgReadRate && parseFloat(data.avgReadRate) < 20) {
         newInsights.push({
+          id: 'email-open-rate',
           type: 'warning',
           title: 'Low Email Open Rates',
-          description: `Average open rate is ${email.avgReadRate?.toFixed(2)}%. Consider optimizing subject lines.`,
+          description: `Average open rate is ${data.avgReadRate}%. Consider optimizing subject lines.`,
           action: 'View Emails',
           link: '/services'
         })
       }
-      if (email.bounceRate > 5) {
+      if (data.totalBounced > 100) {
         newInsights.push({
-          type: 'alert',
+          id: 'email-bounce',
+          type: 'error',
           title: 'High Bounce Rate',
-          description: `Bounce rate is ${email.bounceRate}%. Clean your email list to improve deliverability.`,
-          action: 'View Details',
+          description: `${data.totalBounced} emails bounced. Review email list quality.`,
+          action: 'Review',
           link: '/services'
         })
       }
     }
     
-    if (voicemail?.overall && voicemail.overall.totalSent > 0) {
-      if (voicemail.overall.averageSuccessRate < 70) {
+    if (type === 'voicemail' && data?.overall) {
+      const successRate = parseFloat(data.overall.averageSuccessRate || 0)
+      if (successRate < 70 && data.overall.totalSent > 0) {
         newInsights.push({
+          id: 'voicemail-delivery',
           type: 'warning',
           title: 'Voicemail Delivery Issues',
-          description: `Only ${voicemail.overall.averageSuccessRate}% delivery success. Check phone number quality.`,
+          description: `Only ${successRate}% delivery success. Check phone number quality.`,
           action: 'View Records',
           link: '/services'
         })
       }
     }
-    
-    setInsights(newInsights)
+
+    if (newInsights.length > 0) {
+      setInsights(prev => {
+        const existingIds = new Set(newInsights.map(i => i.id))
+        const filtered = prev.filter(i => !existingIds.has(i.id))
+        return [...filtered, ...newInsights]
+      })
+    }
   }
 
   const getGreeting = () => {
@@ -202,19 +342,25 @@ const Dashboard = () => {
 
   const pieChartData = useMemo(() => {
     if (!voicemailMetrics?.overall) return []
-    const { successfulDeliveries = 0, failedSends = 0, otherStatus = 0 } = voicemailMetrics.overall
+    const { successfulDeliveries = 0, failedDeliveries = 0, otherStatus = 0 } = voicemailMetrics.overall
     return [
       { name: 'Delivered', value: successfulDeliveries, color: '#10B981' },
-      { name: 'Failed', value: failedSends, color: '#EF4444' },
-      { name: 'Other', value: otherStatus, color: '#6B7280' }
+      { name: 'Failed', value: failedDeliveries, color: '#EF4444' },
+      { name: 'Other', value: otherStatus, color: '#F59E0B' }
     ].filter(d => d.value > 0)
   }, [voicemailMetrics])
 
   if (loading) {
     return (
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex items-center justify-center h-64">
-          <Loader2 className="h-12 w-12 animate-spin text-primary-600" />
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-center">
+          <div className="relative inline-block">
+            {/* Outer ring */}
+            <div className="w-16 h-16 border-4 border-gray-200 rounded-full"></div>
+            {/* Spinning ring */}
+            <div className="absolute top-0 left-0 w-16 h-16 border-4 border-primary-600 rounded-full border-t-transparent animate-spin"></div>
+          </div>
+          <p className="mt-4 text-gray-600 font-medium">Loading dashboard...</p>
         </div>
       </div>
     )
@@ -249,6 +395,7 @@ const Dashboard = () => {
               label="Autovation" 
               status={syncStatus.mautic?.data} 
               lastSync={syncStatus.mautic?.data?.lastUpdated || syncStatus.mautic?.data?.lastSync || syncStatus.mautic?.data?.lastSyncAt}
+              isActive={syncProgress?.isActive}
             />
             <SyncIndicator 
               label="Ringless Voicemail" 
@@ -261,6 +408,9 @@ const Dashboard = () => {
               lastSync={syncStatus.sms?.data?.lastSyncAt || syncStatus.sms?.data?.lastUpdated || syncStatus.sms?.data?.lastSync}
             />
           </div>
+          {syncProgress?.isActive && syncProgress?.clientList?.length > 0 && (
+            <SyncProgressPanel progress={syncProgress} />
+          )}
         </>
       )}
 
@@ -445,7 +595,7 @@ const Dashboard = () => {
               />
               <MetricBox 
                 label="Failed" 
-                value={formatNumber(voicemailMetrics.overall.failedSends)} 
+                value={formatNumber(voicemailMetrics.overall.failedDeliveries)} 
                 icon={AlertTriangle}
                 color="red"
               />
@@ -475,23 +625,50 @@ const Dashboard = () => {
             </div>
 
             {pieChartData.length > 0 && (
-              <div className="h-40 min-h-[160px] flex items-center justify-center">
+              <div className="h-56 min-h-[224px] flex items-center justify-center">
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
                     <Pie
                       data={pieChartData}
                       cx="50%"
                       cy="50%"
-                      innerRadius={40}
-                      outerRadius={60}
+                      innerRadius={50}
+                      outerRadius={80}
                       dataKey="value"
-                      label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                      label={({ cx, cy, midAngle, innerRadius, outerRadius, percent, name }) => {
+                        const RADIAN = Math.PI / 180;
+                        const radius = outerRadius + 25;
+                        const x = cx + radius * Math.cos(-midAngle * RADIAN);
+                        const y = cy + radius * Math.sin(-midAngle * RADIAN);
+                        
+                        return (
+                          <text 
+                            x={x} 
+                            y={y} 
+                            fill="#1F2937" 
+                            textAnchor={x > cx ? 'start' : 'end'} 
+                            dominantBaseline="central"
+                            className="text-sm font-semibold"
+                          >
+                            {`${name} ${(percent * 100).toFixed(0)}%`}
+                          </text>
+                        );
+                      }}
+                      labelLine={{ stroke: '#9CA3AF', strokeWidth: 1 }}
                     >
                       {pieChartData.map((entry, index) => (
                         <Cell key={`cell-${index}`} fill={entry.color} />
                       ))}
                     </Pie>
-                    <Tooltip />
+                    <Tooltip 
+                      formatter={(value) => value.toLocaleString()}
+                      contentStyle={{ 
+                        backgroundColor: '#fff', 
+                        border: '1px solid #E5E7EB',
+                        borderRadius: '0.5rem',
+                        padding: '8px 12px'
+                      }}
+                    />
                   </PieChart>
                 </ResponsiveContainer>
               </div>
@@ -506,42 +683,12 @@ const Dashboard = () => {
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <QuickActionButton 
               icon={RefreshCw} 
-              label={isSyncing ? "Syncing..." : "Sync All Data"}
-              disabled={isSyncing}
-              onClick={async () => {
-                try {
-                  setIsSyncing(true)
-                  toast.info('Syncing Mautic automation clients and voicemail data...', { autoClose: 3000 })
-                  
-                  // 🚀 OPTIMIZED: Single consolidated sync endpoint
-                  const response = await axios.post('/api/dashboard/sync-all?syncDropCowboy=true')
-                  
-                  // Show specific results
-                  if (response.data?.success) {
-                    const mautic = response.data.data?.mautic
-                    const dropCowboy = response.data.data?.dropCowboy
-                    
-                    if (mautic?.success) {
-                      toast.success(mautic.message || 'Mautic automation clients synced!', { autoClose: 4000 })
-                    } else if (mautic?.message) {
-                      toast.warning(mautic.message, { autoClose: 4000 })
-                    }
-                    
-                    if (dropCowboy?.success) {
-                      toast.success('Voicemail data synced!', { autoClose: 3000 })
-                    }
-                    
-                    // Refresh dashboard data
-                    await fetchAllData()
-                  } else {
-                    toast.error('Sync completed with errors')
-                  }
-                } catch (error) {
-                  console.error('Error starting sync:', error)
-                  toast.error(error.response?.data?.error?.message || 'Failed to sync. Please try again.')
-                } finally {
-                  setIsSyncing(false)
-                }
+              label="Sync All Data" 
+              onClick={() => {
+                axios.post('/api/mautic/sync/all').catch(() => {})
+                axios.post('/api/dropcowboy/fetch').catch(() => {})
+                setTimeout(fetchSyncProgress, 500)
+                fetchAllData()
               }}
             />
             <QuickActionButton 
@@ -669,6 +816,90 @@ const SyncIndicator = ({ label, status, lastSync, isActive }) => {
   )
 }
 
+const SyncProgressPanel = ({ progress }) => {
+  const { clientList, totalClients, completedClients, elapsedSeconds, currentBatch, totalBatches } = progress
+  
+  const formatDuration = (seconds) => {
+    if (seconds < 60) return `${seconds}s`
+    const mins = Math.floor(seconds / 60)
+    const secs = seconds % 60
+    return `${mins}m ${secs}s`
+  }
+
+  const getStatusIcon = (status) => {
+    switch (status) {
+      case 'syncing':
+        return <Loader2 size={14} className="animate-spin text-blue-600" />
+      case 'completed':
+        return <CheckCircle2 size={14} className="text-green-600" />
+      case 'failed':
+        return <XCircle size={14} className="text-red-600" />
+      case 'pending':
+      default:
+        return <Pause size={14} className="text-gray-400" />
+    }
+  }
+
+  const getStatusColor = (status) => {
+    switch (status) {
+      case 'syncing': return 'bg-blue-50 border-blue-200'
+      case 'completed': return 'bg-green-50 border-green-200'
+      case 'failed': return 'bg-red-50 border-red-200'
+      default: return 'bg-gray-50 border-gray-200'
+    }
+  }
+
+  const progressPercent = totalClients > 0 ? Math.round((completedClients / totalClients) * 100) : 0
+
+  return (
+    <div className="card mb-6">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-3">
+          <Server size={20} className="text-blue-600" />
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900">Sync Progress</h3>
+            <p className="text-sm text-gray-500">
+              Batch {currentBatch}/{totalBatches} - {completedClients}/{totalClients} clients - {formatDuration(elapsedSeconds)}
+            </p>
+          </div>
+        </div>
+        <div className="text-right">
+          <div className="text-2xl font-bold text-blue-600">{progressPercent}%</div>
+        </div>
+      </div>
+
+      <div className="w-full bg-gray-200 rounded-full h-2 mb-4">
+        <div 
+          className="bg-blue-600 h-2 rounded-full transition-all duration-500" 
+          style={{ width: `${progressPercent}%` }}
+        />
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 max-h-64 overflow-y-auto">
+        {clientList.map((client) => (
+          <div 
+            key={client.clientId} 
+            className={`border rounded-lg p-3 ${getStatusColor(client.status)}`}
+          >
+            <div className="flex items-center gap-2 mb-1">
+              {getStatusIcon(client.status)}
+              <span className="font-medium text-gray-900 text-sm truncate">{client.clientName}</span>
+            </div>
+            <div className="text-xs text-gray-600 truncate">
+              {client.message || (client.status === 'pending' ? 'Waiting...' : '')}
+            </div>
+            {client.status === 'completed' && (
+              <div className="text-xs text-green-700 mt-1">
+                {client.emails || 0} emails, {client.campaigns || 0} campaigns, {client.emailReports || 0} reports
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 const InsightCard = ({ insight, onClick }) => {
   const typeConfig = {
     warning: { bg: 'bg-yellow-50', border: 'border-yellow-200', icon: AlertTriangle, iconColor: 'text-yellow-600' },
@@ -701,21 +932,12 @@ const InsightCard = ({ insight, onClick }) => {
   )
 }
 
-const QuickActionButton = ({ icon: Icon, label, onClick, disabled = false }) => (
+const QuickActionButton = ({ icon: Icon, label, onClick }) => (
   <button
     onClick={onClick}
-    disabled={disabled}
-    className={`flex flex-col items-center gap-2 p-4 rounded-lg transition-colors ${
-      disabled 
-        ? 'bg-gray-100 cursor-not-allowed opacity-60' 
-        : 'bg-gray-50 hover:bg-gray-100'
-    }`}
+    className="flex flex-col items-center gap-2 p-4 bg-gray-50 hover:bg-gray-100 rounded-lg transition-colors"
   >
-    {disabled ? (
-      <Loader2 size={24} className="text-primary-600 animate-spin" />
-    ) : (
-      <Icon size={24} className="text-primary-600" />
-    )}
+    <Icon size={24} className="text-primary-600" />
     <span className="text-sm font-medium text-gray-700">{label}</span>
   </button>
 )

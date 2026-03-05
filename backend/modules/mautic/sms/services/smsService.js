@@ -418,14 +418,19 @@ class SmsService {
       logger.info(`   🔗 Using smsClientId: ${resolvedSmsClientId} for ${allSms.length} campaigns`);
 
       for (const sms of allSms) {
+        // ✅ EXCLUSIVE LINK: clientId XOR smsClientId (never both)
+        const hasClientId = sms.clientId != null;
+        const finalClientId = hasClientId ? sms.clientId : null;
+        const finalSmsClientId = hasClientId ? null : resolvedSmsClientId;
+
         const result = await prisma.mauticSms.upsert({
           where: { mauticId: sms.id },
           update: {
             name: sms.name,
             category: sms.category,
             sentCount: sms.sentCount || 0,
-            clientId: sms.clientId,
-            smsClientId: resolvedSmsClientId,  // ✅ Use validated ID
+            clientId: finalClientId,           // ✅ Exclusive: Set only if matched to MauticClient
+            smsClientId: finalSmsClientId,     // ✅ Exclusive: Set only if SMS-only (no MauticClient match)
             // ✅ Set origin tracking on update (in case it wasn't set before)
             originMauticUrl: normalizedOriginUrl,
             originUsername: originUsername,
@@ -436,8 +441,8 @@ class SmsService {
             name: sms.name,
             category: sms.category,
             sentCount: sms.sentCount || 0,
-            clientId: sms.clientId,
-            smsClientId: resolvedSmsClientId,  // ✅ Use validated ID
+            clientId: finalClientId,           // ✅ Exclusive: Set only if matched to MauticClient
+            smsClientId: finalSmsClientId,     // ✅ Exclusive: Set only if SMS-only (no MauticClient match)
             // ✅ Set origin tracking on create
             originMauticUrl: normalizedOriginUrl,
             originUsername: originUsername
@@ -528,9 +533,7 @@ class SmsService {
           category: sms.category,
           sentCount: sms.sentCount || 0,
           clientId: sms.clientId,  // ✅ Use categorized client assignment
-          // ✅ FIXED: Use corresponding SmsClient.id (if exists) to track origin credentials
-          // This allows contact activity fetch to use correct credentials even when campaign is grouped under Mautic client
-          smsClientId: smsClientIdToUse,
+          smsClientId: null,        // ✅ EXCLUSIVE LINK: Clear smsClientId when clientId is set
           originMauticUrl: normalizedOriginUrl,
           originUsername: originUsername,
           updatedAt: new Date()

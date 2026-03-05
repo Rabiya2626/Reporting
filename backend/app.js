@@ -26,6 +26,7 @@ import "./modules/vicidialer/cron/sync.cron.js"; // Initialize Vicidial sync cro
 // Module routes
 import dropCowboyRoutes from './modules/dropCowboy/routes/api.js';
 import mauticRoutes from './modules/mautic/email/routes/api.js';
+import smsRoutes from './routes/sms.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -191,6 +192,9 @@ export function createApp() {
   
   // Mautic (Email Marketing) - no auth required for embedded service
   app.use('/api/mautic', mauticRoutes);
+  
+  // SMS Campaigns Management - new dedicated routes
+  app.use('/api', smsRoutes);
   
   // Vicidial Agents Management
   app.use("/api/agents", vicidialAgentRoutes);

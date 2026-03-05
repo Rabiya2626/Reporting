@@ -451,6 +451,114 @@ router.post('/sms-clients/:id/sync', async (req, res) => {
 });
 
 /**
+ * POST /api/mautic/sync-all-sms-stats
+ * Manually trigger stats sync for ALL SMS campaigns with sentCount > 0 but missing stats
+ * This is useful for backfilling stats after campaign metadata has already been synced
+ */
+router.post('/sync-all-sms-stats', async (req, res) => {
+  try {
+    logger.info('🔄 Starting bulk SMS stats sync for all campaigns...');
+
+    // Find campaigns with sentCount > 0
+    const campaignsNeedingSync = await prisma.mauticSms.findMany({
+      where: {
+        sentCount: { gt: 0 }
+      },
+      include: {
+        client: {
+          select: {
+            id: true,
+            name: true,
+            mauticUrl: true,
+            username: true,
+            password: true
+          }
+        },
+        _count: {
+          select: {
+            stats: true
+          }
+        }
+      }
+    });
+
+    // Filter to campaigns with no stats or very few stats compared to sentCount
+    const campaignsWithMissingStats = campaignsNeedingSync.filter(c => 
+      c._count.stats === 0 || c._count.stats < (c.sentCount * 0.5) // Less than 50% of expected stats
+    );
+
+    logger.info(`   Found ${campaignsWithMissingStats.length} campaigns needing stats sync`);
+
+    if (campaignsWithMissingStats.length === 0) {
+      return res.json({
+        success: true,
+        message: 'All campaigns already have stats',
+        data: { synced: 0, errors: 0 }
+      });
+    }
+
+    let successCount = 0;
+    let errorCount = 0;
+    const errors = [];
+
+    for (const campaign of campaignsWithMissingStats) {
+      try {
+        if (!campaign.client) {
+          logger.warn(`   ⚠️  Skipping "${campaign.name}" - no Mautic client`);
+          errorCount++;
+          errors.push({ campaign: campaign.name, error: 'No Mautic client link' });
+          continue;
+        }
+
+        logger.info(`   🔄 Syncing "${campaign.name}" (${campaign.sentCount} sent, ${campaign._count.stats} existing stats)...`);
+
+        // Decrypt password
+        const password = encryptionService.decrypt(campaign.client.password);
+
+        // Sync stats
+        const statsResult = await smsSyncService.syncSmsStats(
+          {
+            name: campaign.client.name,
+            mauticUrl: campaign.client.mauticUrl,
+            username: campaign.client.username,
+            password: password
+          },
+          campaign.id,
+          campaign.mauticId,
+          true // Clear existing
+        );
+
+        logger.info(`   ✅ Synced ${statsResult.created} stats for "${campaign.name}"`);
+        successCount++;
+      } catch (error) {
+        logger.error(`   ❌ Failed "${campaign.name}":`, error.message);
+        errorCount++;
+        errors.push({ campaign: campaign.name, error: error.message });
+      }
+    }
+
+    logger.info(`\n✅ Bulk stats sync complete: ${successCount} success, ${errorCount} errors`);
+
+    res.json({
+      success: true,
+      message: `Synced stats for ${successCount} campaigns`,
+      data: {
+        synced: successCount,
+        errors: errorCount,
+        errorDetails: errors
+      }
+    });
+  } catch (error) {
+    logger.error('Failed to sync all SMS stats:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to sync all SMS stats',
+      error: error.message
+    });
+  }
+});
+
+/**
  * POST /api/mautic/sms-clients/recategorize
  * Re-categorize all SMS campaigns based on first-word matching
  * This fixes any existing data inconsistencies
@@ -953,10 +1061,46 @@ async function syncSmsClientData(smsClientId) {
 
     logger.info(`   Storage result: ${storeResult.created} created, ${storeResult.updated} updated, ${storeResult.matched} matched, ${storeResult.unmatched} unmatched`);
 
-    // ⚡ OPTIMIZATION: Skip stats fetch during initial creation for speed
-    // Stats will be fetched during scheduled sync or manual sync
-    // This makes SMS campaigns visible instantly in the UI
-    logger.info(`⚡ SMS campaigns stored. Stats will be fetched during scheduled sync.`);
+    // ✅ SYNC SMS STATS: Fetch individual message records for campaigns with sentCount > 0
+    logger.info(`\n📊 Starting SMS stats sync for campaigns with messages...`);
+    
+    const campaignsToSync = smsCampaigns.filter(c => (c.sentCount || 0) > 0);
+    logger.info(`   Found ${campaignsToSync.length} campaigns with messages to sync`);
+
+    let statsSuccessCount = 0;
+    let statsErrorCount = 0;
+
+    for (const campaign of campaignsToSync) {
+      try {
+        // Find the local SMS ID for this campaign
+        const localSms = await prisma.mauticSms.findUnique({
+          where: { mauticId: campaign.id }
+        });
+
+        if (!localSms) {
+          logger.warn(`   ⚠️  Skipping stats sync for campaign ${campaign.id} (not found in DB)`);
+          continue;
+        }
+
+        logger.info(`   🔄 Syncing stats for "${campaign.name}" (${campaign.sentCount} sent)...`);
+
+        // Sync stats using the smsSyncService
+        const statsResult = await smsSyncService.syncSmsStats(
+          smsClient, // API credentials
+          localSms.id, // Local SMS ID
+          campaign.id, // Mautic SMS ID
+          true // Clear existing stats
+        );
+
+        logger.info(`   ✅ Synced ${statsResult.created} stats for "${campaign.name}"`);
+        statsSuccessCount++;
+      } catch (statsError) {
+        logger.error(`   ❌ Failed to sync stats for "${campaign.name}":`, statsError.message);
+        statsErrorCount++;
+      }
+    }
+
+    logger.info(`\n📊 Stats sync complete: ${statsSuccessCount} success, ${statsErrorCount} errors`);
 
     // Create sync log after successful completion
     const endTime = Date.now();
@@ -999,7 +1143,7 @@ async function syncSmsClientData(smsClientId) {
         syncType: 'manual',
         triggeredBy: 'api',
         errorCount: 1,
-        errorMessage: errorMsg.substring(0, 255),
+        errorMessage: errorMsg.substring(0, 190), // Truncate to 190 chars (DB column is VARCHAR(191))
         completedAt: new Date(),
         durationSeconds: Math.floor((endTime - startTime) / 1000)
       }
@@ -1221,4 +1365,3 @@ router.post('/sms-clients/:clientId/campaigns/:smsId/sync-stats', async (req, re
 
 // ============================================
 export default router;
-

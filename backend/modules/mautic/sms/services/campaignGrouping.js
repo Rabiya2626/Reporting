@@ -8,13 +8,25 @@ import logger from '../../../../utils/logger.js';
 
 class CampaignGroupingService {
   /**
-   * Normalize a string for comparison
+   * Normalize a string for comparison - more aggressive normalization
    */
   normalize(str) {
     return (str || '')
       .toLowerCase()
       .trim()
+      // Remove special characters and punctuation
+      .replace(/[^\w\s]/g, '')
+      // Normalize spaces (multiple spaces to single)
       .replace(/\s+/g, ' ');
+  }
+
+  /**
+   * Get a version without any spaces for fuzzy matching
+   */
+  normalizeNoSpaces(str) {
+    return (str || '')
+      .toLowerCase()
+      .replace(/[^\w]/g, ''); // Remove everything except word characters
   }
 
   /**
@@ -40,51 +52,76 @@ class CampaignGroupingService {
 
   /**
    * Check if a Mautic client name matches an SMS campaign name
-   * Priority: Full match > Primary keyword match > Substring match > Acronym match
-   * Only matches on meaningful keywords to prevent false positives
+   * Priority: Full match > Full no-space match > Primary keyword > Substring > Acronym
    */
   isClientMatch(mauticName, smsName) {
     const mNorm = this.normalize(mauticName);
     const sNorm = this.normalize(smsName);
+    const mNoSpace = this.normalizeNoSpaces(mauticName);
+    const sNoSpace = this.normalizeNoSpaces(smsName);
 
     // 🥇 PRIORITY 1: Exact full name match
-    if (mNorm === sNorm) {
+    if (mNorm === sNorm || mNoSpace === sNoSpace) {
       return { match: true, priority: 1, reason: 'exact_match' };
     }
 
     const mWords = this.getWords(mauticName);
     const sWords = this.getWords(smsName);
 
-    // 🥈 PRIORITY 2: PRIMARY keyword match only (e.g., "Century" from "Century Pharmaceuticals" matches "Century SMS")
-    // Only use the FIRST word as the primary keyword to prevent secondary words from causing matches
-    // Example: "Century" matches "Century SMS", but "Pharmaceuticals" should NOT match "Pharmaceutical Supplies"
-    const primaryKeyword = mWords[0];  // First word is the primary identifier
+    // 🥈 PRIORITY 2: Full client name appears in campaign (handles "MoneyMailer" vs "Money Mailer")
+    if (sNoSpace.includes(mNoSpace) || mNoSpace.includes(sNoSpace)) {
+      return { match: true, priority: 2, reason: 'no_space_match' };
+    }
+
+    // 🥉 PRIORITY 3: PRIMARY keyword match (first word)
+    const primaryKeyword = mWords[0];
     if (primaryKeyword && primaryKeyword.length > 2 && sWords.includes(primaryKeyword)) {
-      return { match: true, priority: 2, reason: 'primary_keyword_match' };
+      return { match: true, priority: 3, reason: 'primary_keyword_match' };
     }
 
-    // 🥉 PRIORITY 3: One side appears as whole word on other side
+    // 🏅 PRIORITY 4: ANY significant keyword match (words > 3 chars)
+    const significantMWords = mWords.filter(w => w.length > 3);
+    const significantSWords = sWords.filter(w => w.length > 3);
+    
+    for (const mWord of significantMWords) {
+      if (significantSWords.includes(mWord)) {
+        return { match: true, priority: 4, reason: 'significant_keyword_match' };
+      }
+    }
+
+    // � PRIORITY 5: One side appears as whole word on other side
     if (sWords.includes(mNorm) || mWords.includes(sNorm)) {
-      return { match: true, priority: 3, reason: 'word_match' };
+      return { match: true, priority: 5, reason: 'word_match' };
     }
 
-    // 🏅 PRIORITY 4: Substring match (but only for longer names to prevent accidents)
+    // �️ PRIORITY 6: Substring match (for longer names)
     if (mNorm.length > 3 && sNorm.includes(mNorm)) {
-      return { match: true, priority: 4, reason: 'substring_match' };
+      return { match: true, priority: 6, reason: 'substring_match' };
     }
     if (sNorm.length > 3 && mNorm.includes(sNorm)) {
-      return { match: true, priority: 4, reason: 'substring_match' };
+      return { match: true, priority: 6, reason: 'substring_match' };
     }
 
-    // 🏆 PRIORITY 5: Acronym match (only if one side is single word)
+    // 🎯 PRIORITY 7: Acronym match - Check if campaign STARTS with client abbreviation
     const mAbbr = this.getAbbreviation(mauticName);
     const sAbbr = this.getAbbreviation(smsName);
-
+    
+    // Check if first word of campaign matches client abbreviation (e.g., "CP 2025..." matches "Century Pharmaceuticals")
+    if (sWords.length > 0 && sWords[0] === mAbbr.toLowerCase()) {
+      return { match: true, priority: 7, reason: 'acronym_at_start' };
+    }
+    
+    // Also check if campaign starts with the abbreviation (no spaces)
+    if (sNoSpace.startsWith(mAbbr.toLowerCase()) && sNoSpace.length > mAbbr.length) {
+      return { match: true, priority: 7, reason: 'acronym_prefix' };
+    }
+    
+    // Legacy checks for full acronym match
     if (mWords.length === 1 && mNorm === sAbbr) {
-      return { match: true, priority: 5, reason: 'acronym_match' };
+      return { match: true, priority: 7, reason: 'acronym_match' };
     }
     if (sWords.length === 1 && sNorm === mAbbr) {
-      return { match: true, priority: 5, reason: 'acronym_match' };
+      return { match: true, priority: 7, reason: 'acronym_match' };
     }
 
     return { match: false, priority: null, reason: null };
