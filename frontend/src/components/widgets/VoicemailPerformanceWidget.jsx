@@ -1,11 +1,9 @@
 import { useState, useEffect, useMemo } from 'react'
 import { Phone, CheckCircle, AlertTriangle, Loader2, BarChart3 } from 'lucide-react'
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts'
-import { useMetrics } from '../../hooks/dropCowboy/useDropCowboy'
+import axios from 'axios'
 
 const formatNumber = (num) => {
-  console.log("total stat", num);
-  
   if (num === null || num === undefined) return '0'
   if (num >= 1000000) return (Math.floor(num / 100000) / 10).toFixed(1) + 'M'
   if (num >= 1000) return (Math.floor(num / 100) / 10).toFixed(1) + 'K'
@@ -42,39 +40,37 @@ const MetricBox = ({ label, value, icon: Icon, color = 'gray' }) => {
 const COLORS = ['#10B981', '#EF4444', '#F59E0B']
 
 const VoicemailPerformanceWidget = ({ clientName }) => {
-  const { metrics, loading, error } = useMetrics({})
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
   const [clientStats, setClientStats] = useState(null)
 
   useEffect(() => {
-    if (!metrics?.campaigns || !clientName) return
+    const fetchClientStats = async () => {
+      if (!clientName) {
+        setLoading(false)
+        return
+      }
 
-    const records = metrics.campaigns.flatMap((campaign) => {
-      const campClientName = campaign.client || "Unknown"
-      return campaign.records.map((record) => ({
-        ...record,
-        client: campClientName,
-        status: record.status?.trim()?.toLowerCase() || "other",
-      }))
-    })
+      try {
+        setLoading(true)
+        setError(null)
+        const response = await axios.get(`/api/clients/${encodeURIComponent(clientName)}/dropcowboy/stats`)
+        
+        if (response.data?.success) {
+          setClientStats(response.data.data)
+        } else {
+          setError('Failed to load voicemail stats')
+        }
+      } catch (err) {
+        console.error('Error fetching voicemail stats:', err)
+        setError(err.response?.data?.message || 'Failed to load voicemail stats')
+      } finally {
+        setLoading(false)
+      }
+    }
 
-    const filteredRecords = records.filter((r) => r.client === clientName)
-
-    const totalSent = filteredRecords.length
-    const successfulDeliveries = filteredRecords.filter(r => r.status === "success").length
-    const failedSends = filteredRecords.filter(r => r.status === "failure").length
-    const otherStatus = filteredRecords.filter(r => !["success", "failure"].includes(r.status)).length
-    
-    const totalCost = filteredRecords.reduce((sum, r) => sum + (parseFloat(r.cost) || 0), 0)
-
-    setClientStats({
-      totalSent,
-      successfulDeliveries,
-      failedSends,
-      otherStatus,
-      totalCost,
-      averageSuccessRate: totalSent > 0 ? ((successfulDeliveries / totalSent) * 100).toFixed(1) : 0
-    })
-  }, [metrics, clientName])
+    fetchClientStats()
+  }, [clientName])
 
   const pieChartData = useMemo(() => {
     if (!clientStats) return []
@@ -170,11 +166,11 @@ const VoicemailPerformanceWidget = ({ clientName }) => {
             <div className="flex-1 bg-gray-200 rounded-full h-3">
               <div 
                 className="bg-green-500 h-3 rounded-full transition-all duration-500"
-                style={{ width: `${Math.min(parseFloat(clientStats.averageSuccessRate) || 0, 100)}%` }}
+                style={{ width: `${Math.min(parseFloat(clientStats.avgSuccessRate || clientStats.averageSuccessRate) || 0, 100)}%` }}
               />
             </div>
             <span className="text-lg font-semibold text-green-600">
-              {clientStats.averageSuccessRate}%
+              {(clientStats.avgSuccessRate || clientStats.averageSuccessRate || 0).toFixed(1)}%
             </span>
           </div>
         </div>

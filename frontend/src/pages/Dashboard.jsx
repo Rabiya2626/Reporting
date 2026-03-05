@@ -475,7 +475,7 @@ const Dashboard = () => {
             </div>
 
             {pieChartData.length > 0 && (
-              <div className="h-40 min-h-[160px] flex items-center justify-center">
+              <div className="h-40 min-h-[180px] flex items-center justify-center">
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
                     <Pie

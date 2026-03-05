@@ -9,6 +9,7 @@ import MauticSmsSection from "../components/mautic/MauticSmsSection";
 import useViewLevel from "../zustand/useViewLevel";
 import ClientServicesSection from "../components/ClientServicesSection";
 import { usePermissions } from "../utils/permissions";
+import clientService from "../services/clientService";
 
 const Clients = () => {
     const {
@@ -42,125 +43,12 @@ const Clients = () => {
 
     const fetchClients = async () => {
         try {
-            // Fetch Mautic clients, all clients, and DropCowboy metrics
-            const [mauticRes, clientsRes, dropCowboyRes] = await Promise.all([
-                axios.get("/api/mautic/clients"),
-                axios.get("/api/clients"),
-                axios.get("/api/dropcowboy/metrics").catch(() => ({ data: { data: { campaigns: [] } } })),
-            ]);
-
-            const mauticClients = (mauticRes.data?.data || []).map((c) => ({
-                ...c,
-                id: c.clientId || c.id,
-                mauticApiId: c.id,
-                uniqueId: `mautic-${c.clientId || c.id}`,
-                services: c.reportId === 'sms-only' ? ["sms"] : ["mautic"], // SMS-only clients only have SMS service
-            }));
-
-            // Extract clients from DropCowboy campaigns
-            const dropCowboyCampaigns = dropCowboyRes.data?.data?.campaigns || [];
-            const dropCowboyClientNames = new Set(
-                dropCowboyCampaigns
-                    .map(camp => camp.client)
-                    .filter(Boolean)
-            );
-
-            const allClients = clientsRes.data || [];
-
-            // Build assignment maps for later lookup
-            const assignmentsByName = new Map();
-            const assignmentsByClientId = new Map();
-
-            for (const c of allClients) {
-                const key = c.name?.trim().toLowerCase();
-                if (key) {
-                    const existing = assignmentsByName.get(key) || [];
-                    const newOnes = c.assignments || [];
-
-                    // merge by unique userId
-                    const merged = new Map([
-                        ...existing.map(a => [a.userId || a.user?.id, a]),
-                        ...newOnes.map(a => [a.userId || a.user?.id, a]),
-                    ]);
-
-                    assignmentsByName.set(key, Array.from(merged.values()));
-                }
-
-                // Also index assignments by main client id when available
-                if (c.id) {
-                    assignmentsByClientId.set(c.id, c.assignments || []);
-                }
-            }
-
-            // Attach assignments to Mautic clients and add dropcowboy service if they have campaigns
-            mauticClients.forEach((client) => {
-                // Check if this client has DropCowboy campaigns
-                if (dropCowboyClientNames.has(client.name)) {
-                    client.services.push('dropcowboy');
-                }
-
-                // Prefer assignments linked by main client id (more reliable), fallback to name matching
-                let assignments = null;
-                if (client.clientId) {
-                    assignments = assignmentsByClientId.get(client.clientId);
-                }
-
-                if (!assignments || assignments.length === 0) {
-                    const key = (client.name || '').trim().toLowerCase();
-                    assignments = assignmentsByName.get(key);
-                }
-
-                if (assignments && assignments.length > 0) {
-                    client.assignments = assignments;
-                }
-            });
-
-            // ✅ Process SMS and DropCowboy Services
-            // For each Mautic client, check if it has SMS campaigns or DropCowboy campaigns
-            for (const mauticClient of mauticClients) {
-                // Check DropCowboy
-                if (dropCowboyClientNames.has(mauticClient.name)) {
-                    if (!mauticClient.services.includes('dropcowboy')) {
-                        mauticClient.services.push('dropcowboy');
-                    }
-                }
-                
-                // Check SMS - use the MauticClient id (not mauticApiId) for the query
-                // mauticApiId is only used for Mautic API calls, not our database queries
-                try {
-                    const smsRes = await axios.get(`/api/mautic/clients/${mauticClient.mauticApiId}/sms`);
-                    const smsCampaigns = smsRes.data?.data || [];
-                    
-                    if (smsCampaigns.length > 0) {
-                        if (!mauticClient.services.includes('sms')) {
-                            mauticClient.services.push('sms');
-                        }
-                    }
-                } catch (err) {
-                    // Ignore errors - client might not have SMS campaigns
-                    console.debug(`No SMS campaigns for client ${mauticClient.name}:`, err.message);
-                }
-            }
-
-            // Use mauticClients directly (no need for separate smsOnlyClients array)
-            let combinedClients = mauticClients;
-
-            // For non-full-access users, restrict visibility based on permissions
-            if (!hasFullAccess()) {
-                if (canManageTeam()) {
-                    // Team managers can see clients they created or are assigned to
-                    combinedClients = combinedClients.filter((c) => {
-                        const createdByThisUser = c.createdBy?.id === user.id;
-                        const assignedToUser = (c.assignments || []).some(a => (a.user?.id || a.userId) === user.id);
-                        return createdByThisUser || assignedToUser;
-                    });
-                } else {
-                    // Regular users - only assigned clients
-                    combinedClients = combinedClients.filter((c) => (c.assignments || []).some(a => (a.user?.id || a.userId) === user.id));
-                }
-            }
-
-            setClients(combinedClients);
+            setLoading(true);
+            
+            // ✅ Use optimized client service with caching
+            const unifiedClients = await clientService.getUnifiedClients();
+            
+            setClients(unifiedClients);
         } catch (error) {
             console.error("Error fetching clients:", error);
         } finally {
@@ -178,8 +66,8 @@ const Clients = () => {
 
     const fetchManagers = async () => {
         try {
-            const response = await axios.get("/api/clients/assignment/managers");
-            setManagers(response.data.managers || response.data || []);
+            const managers = await clientService.getManagers();
+            setManagers(managers);
         } catch (error) {
             console.error("Error fetching managers:", error);
         }
@@ -188,10 +76,7 @@ const Clients = () => {
     const fetchEmployeesForManager = async (managerId) => {
         if (!managerId) return [];
         try {
-            const response = await axios.get(
-                `/api/clients/assignment/managers/${managerId}/employees`
-            );
-            const employees = response.data.employees || [];
+            const employees = await clientService.getEmployeesForManager(managerId);
             setEmployeesForManager((prev) => ({ ...prev, [managerId]: employees }));
             return employees;
         } catch (error) {
@@ -228,23 +113,21 @@ const Clients = () => {
         setLoadingCampaigns(true);
 
         try {
-            const mauticApiId = selectedClient.mauticApiId; // ✅ use this, not selectedClient.id
-            if (!mauticApiId) {
-                console.warn("No Mautic API ID found for this client");
+            const clientId = selectedClient.id;
+            if (!clientId) {
+                console.warn("No client ID found");
                 setLoadingCampaigns(false);
                 return;
             }
-            const baseUrl = import.meta.env.VITE_API_URL || "";
-            const [campaignsRes, segmentsRes, emailsRes] = await Promise.all([
-                axios.get(`${baseUrl}/api/mautic/clients/${mauticApiId}/campaigns`),
-                axios.get(`${baseUrl}/api/mautic/clients/${mauticApiId}/segments`),
-                axios.get(`${baseUrl}/api/mautic/clients/${mauticApiId}/emails`),
+            
+            // ✅ Use optimized client service with caching and parallel loading
+            const [campaignsData, segmentsData, emailsData] = await Promise.all([
+                clientService.getMauticCampaigns(clientId),
+                clientService.getMauticSegments(clientId),
+                clientService.getMauticEmails(clientId),
             ]);
 
-            const segmentsData = segmentsRes.data.data;
-            const emailsData = emailsRes.data.data;
-
-            const campaignsWithDetails = campaignsRes.data.data.map((c) => {
+            const campaignsWithDetails = campaignsData.map((c) => {
                 const campaignEmails = emailsData.filter((e) =>
                     e.name.toLowerCase().includes(c.name.toLowerCase().split(":")[0])
                 );
@@ -253,7 +136,8 @@ const Clients = () => {
 
             setCampaigns(campaignsWithDetails);
         } catch (error) {
-            console.error("Error fetching campaigns:", error);
+            console.error("Error fetching Mautic campaigns:", error);
+            setCampaigns([]);
         } finally {
             setLoadingCampaigns(false);
         }
@@ -300,10 +184,11 @@ const Clients = () => {
                 throw new Error('Please select at least a manager or an employee');
             }
 
+            // ✅ Use optimized client service
             // Assign manager first (if provided)
             if (mgrId) {
                 try {
-                    await axios.post(`/api/clients/${selectedClientForAssign.id}/assign`, { userId: mgrId });
+                    await clientService.assignClient(selectedClientForAssign.id, { userId: mgrId });
                 } catch (mgrErr) {
                     console.warn('Manager assign warning:', mgrErr?.response?.data || mgrErr.message);
                 }
@@ -312,7 +197,7 @@ const Clients = () => {
             // Assign all selected employees
             for (const uid of userIds) {
                 try {
-                    await axios.post(`/api/clients/${selectedClientForAssign.id}/assign`, { userId: uid });
+                    await clientService.assignClient(selectedClientForAssign.id, { userId: uid });
                 } catch (uErr) {
                     console.warn('Employee assign warning:', uErr?.response?.data || uErr.message);
                 }
@@ -331,8 +216,8 @@ const Clients = () => {
     const handleUnassign = async (clientId, userId, assignmentClientId = null) => {
         if (!window.confirm('Unassign this user from the client?')) return;
         try {
-            const clientToUse = assignmentClientId || clientId;
-            await axios.delete(`/api/clients/${clientToUse}/assign/${userId}`);
+            // ✅ Use optimized client service
+            await clientService.unassignClient(clientId, userId, assignmentClientId);
             fetchClients();
         } catch (err) {
             console.error('Error unassigning user:', err);

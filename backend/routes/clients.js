@@ -28,6 +28,497 @@ import DataService from "../modules/dropCowboy/services/dataService.js";
 const router = express.Router();
 
 // ============================================
+// GET UNIFIED CLIENTS (Mautic + DropCowboy + SMS) - OPTIMIZED
+// Returns only client metadata with available services
+// No campaign data is loaded - use lazy-load endpoints for that
+// ============================================
+router.get("/unified", authenticate, canViewClients, async (req, res) => {
+  try {
+    const { id: userId } = req.user;
+
+    // 1. Get all Mautic clients (just metadata, no relations)
+    const mauticClients = await prisma.mauticClient.findMany({
+      select: {
+        id: true,
+        clientId: true,
+        name: true,
+        mauticUrl: true,
+        isActive: true,
+        reportId: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+      where: {
+        reportId: { not: 'sms-only' } // do not fetch sms-only clients
+      },
+      orderBy: { name: 'asc' }
+    });
+
+    // 2. Get distinct client IDs that have DropCowboy campaigns
+    const dropCowboyClients = await prisma.dropCowboyCampaign.findMany({
+      where: { clientId: { not: null } },
+      distinct: ['clientId'],
+      select: { clientId: true }
+    });
+    const dropCowboyClientIds = new Set(
+      dropCowboyClients.map(dc => dc.clientId).filter(Boolean)
+    );
+
+    // 3. Get distinct clientIds that have SMS campaigns
+    const smsClients = await prisma.mauticSms.findMany({
+      where: { clientId: { not: null } },
+      distinct: ['clientId'],
+      select: { clientId: true }
+    });
+    const smsClientIds = new Set(smsClients.map(sc => sc.clientId).filter(Boolean));
+
+    // 4. Get all Client records with assignments (for permission filtering)
+    const clientRecords = await prisma.client.findMany({
+      include: {
+        createdBy: {
+          select: { id: true, name: true, email: true, role: true },
+        },
+        assignments: {
+          include: {
+            user: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+                role: true,
+                customRole: {
+                  select: {
+                    name: true,
+                    fullAccess: true,
+                    isTeamManager: true
+                  }
+                }
+              },
+            },
+            assignedBy: {
+              select: { id: true, name: true, email: true },
+            },
+          },
+        },
+      }
+    });
+
+    // Build assignment maps
+    const assignmentsByName = new Map();
+    const assignmentsByClientId = new Map();
+
+    for (const c of clientRecords) {
+      const key = c.name?.trim().toLowerCase();
+      if (key) {
+        const existing = assignmentsByName.get(key) || [];
+        const newOnes = c.assignments || [];
+        const merged = new Map([
+          ...existing.map(a => [a.userId || a.user?.id, a]),
+          ...newOnes.map(a => [a.userId || a.user?.id, a]),
+        ]);
+        assignmentsByName.set(key, Array.from(merged.values()));
+      }
+      if (c.id) {
+        assignmentsByClientId.set(c.id, c.assignments || []);
+      }
+    }
+
+    // 5. Merge Mautic clients with services info
+    let unifiedClients = mauticClients.map((mc) => {
+      const services = [];
+      const nameKey = mc.name?.trim().toLowerCase();
+
+      // Check if SMS-only client
+      if (mc.reportId === 'sms-only') {
+        services.push('sms');
+      } else {
+        services.push('mautic');
+      }
+
+      // Check for DropCowboy campaigns (match by Client ID)
+      if (mc.clientId && dropCowboyClientIds.has(mc.clientId)) {
+        services.push('dropcowboy');
+      }
+
+      // Check for SMS campaigns
+      if (smsClientIds.has(mc.id)) {
+        if (!services.includes('sms')) {
+          services.push('sms');
+        }
+      }
+
+      // Get assignments
+      let assignments = assignmentsByClientId.get(mc.clientId) || [];
+      if (!assignments || assignments.length === 0) {
+        assignments = assignmentsByName.get(nameKey) || [];
+      }
+
+      // Find createdBy from Client records
+      const clientRecord = clientRecords.find(
+        cr => cr.id === mc.clientId || cr.name?.trim().toLowerCase() === nameKey
+      );
+
+      return {
+        id: mc.clientId || mc.id,
+        mauticApiId: mc.id,
+        uniqueId: `mautic-${mc.clientId || mc.id}`,
+        name: mc.name,
+        mauticUrl: mc.mauticUrl,
+        isActive: mc.isActive,
+        reportId: mc.reportId,
+        services,
+        assignments,
+        createdBy: clientRecord?.createdBy || null,
+        createdById: clientRecord?.createdById || null,
+        createdAt: mc.createdAt,
+        updatedAt: mc.updatedAt,
+      };
+    });
+
+    // 6. Permission-based filtering
+    if (!hasFullAccess(req.user)) {
+      if (userHasPermission(req.user, 'Clients', 'Read') || userHasPermission(req.user, 'Clients', 'Create')) {
+        // Team managers can see clients they created or are assigned to
+        unifiedClients = unifiedClients.filter((c) => {
+          const createdByThisUser = c.createdById === userId;
+          const assignedToUser = (c.assignments || []).some(a => (a.user?.id || a.userId) === userId);
+          return createdByThisUser || assignedToUser;
+        });
+      } else {
+        // Regular users - only assigned clients
+        unifiedClients = unifiedClients.filter((c) =>
+          (c.assignments || []).some(a => (a.user?.id || a.userId) === userId)
+        );
+      }
+    }
+
+    res.json({
+      success: true,
+      data: unifiedClients,
+      count: unifiedClients.length
+    });
+
+  } catch (error) {
+    logger.error("Error fetching unified clients", {
+      error: error.message,
+      stack: error.stack,
+      userId: req.user.id,
+    });
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message
+    });
+  }
+});
+
+// ============================================
+// LAZY-LOAD: GET MAUTIC CAMPAIGNS FOR A CLIENT
+// ============================================
+router.get("/:clientId/mautic/campaigns", authenticate, canViewClients, async (req, res) => {
+  try {
+    const clientId = parseInt(req.params.clientId);
+
+    // Find the MauticClient record
+    const mauticClient = await prisma.mauticClient.findFirst({
+      where: { clientId: clientId },
+      select: { id: true, name: true }
+    });
+
+    if (!mauticClient) {
+      return res.json({ success: true, data: [] });
+    }
+
+    // Get campaigns for this Mautic client
+    const campaigns = await prisma.mauticCampaign.findMany({
+      where: { clientId: mauticClient.id },
+      orderBy: { name: 'asc' }
+    });
+
+    res.json({ success: true, data: campaigns });
+  } catch (error) {
+    logger.error("Error fetching Mautic campaigns", {
+      error: error.message,
+      clientId: req.params.clientId,
+    });
+    res.status(500).json({ success: false, message: "Server error", error: error.message });
+  }
+});
+
+// ============================================
+// LAZY-LOAD: GET DROPCOWBOY CAMPAIGNS FOR A CLIENT
+// ============================================
+router.get("/:clientName/dropcowboy/campaigns", authenticate, canViewClients, async (req, res) => {
+  try {
+    const clientName = decodeURIComponent(req.params.clientName);
+
+    // First, find the client by name to get its ID
+    const client = await prisma.client.findFirst({
+      where: { name: clientName },
+      select: { id: true }
+    });
+
+    if (!client) {
+      return res.json({ success: true, data: [] }); // No client found
+    }
+
+    // Get DropCowboy campaigns for this client using clientId with records included
+    const campaigns = await prisma.dropCowboyCampaign.findMany({
+      where: { clientId: client.id },
+      include: {
+        records: {
+          orderBy: { date: 'desc' }
+        }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    // Transform campaigns to match expected format with client name
+    const transformedCampaigns = campaigns.map(campaign => ({
+      ...campaign,
+      client: clientName, // Add client name to each campaign
+    }));
+
+    res.json({ success: true, data: transformedCampaigns });
+  } catch (error) {
+    logger.error("Error fetching DropCowboy campaigns", {
+      error: error.message,
+      clientName: req.params.clientName,
+    });
+    res.status(500).json({ success: false, message: "Server error", error: error.message });
+  }
+});
+
+// ============================================
+// LAZY-LOAD: GET DROPCOWBOY STATS FOR A CLIENT
+// ============================================
+router.get("/:clientName/dropcowboy/stats", authenticate, canViewClients, async (req, res) => {
+  try {
+    const clientName = decodeURIComponent(req.params.clientName);
+    logger.info(`DropCowboy stats requested for client: ${clientName}`);
+
+    // First, find the client by name to get its ID
+    const client = await prisma.client.findFirst({
+      where: { name: clientName },
+      select: { id: true }
+    });
+
+    if (!client) {
+      return res.json({
+        success: true,
+        data: {
+          totalCampaigns: 0,
+          totalSent: 0,
+          successfulDeliveries: 0,
+          failedSends: 0,
+          otherStatus: 0,
+          totalCost: 0,
+          avgSuccessRate: 0
+        }
+      });
+    }
+
+    // Get all campaign IDs for this client using clientId
+    const campaigns = await prisma.dropCowboyCampaign.findMany({
+      where: { clientId: client.id },
+      select: { campaignId: true, id: true }
+    });
+
+    if (campaigns.length === 0) {
+      return res.json({
+        success: true,
+        data: {
+          totalCampaigns: 0,
+          totalSent: 0,
+          successfulDeliveries: 0,
+          failedSends: 0,
+          otherStatus: 0,
+          totalCost: 0,
+          avgSuccessRate: 0
+        }
+      });
+    }
+
+    const campaignIds = campaigns.map(c => c.campaignId);
+
+    // Get aggregated stats
+    const [totalSent, successCount, failureCount, costSum] = await Promise.all([
+      prisma.dropCowboyCampaignRecord.count({
+        where: { campaignId: { in: campaignIds } }
+      }),
+      prisma.dropCowboyCampaignRecord.count({
+        where: {
+          campaignId: { in: campaignIds },
+          status: { in: ["sent", "success", "delivered", "SENT", "SUCCESS", "DELIVERED"] }
+        }
+      }),
+      prisma.dropCowboyCampaignRecord.count({
+        where: {
+          campaignId: { in: campaignIds },
+          status: { in: ["failed", "failure", "FAILED", "FAILURE"] }
+        }
+      }),
+      prisma.dropCowboyCampaignRecord.aggregate({
+        where: { campaignId: { in: campaignIds } },
+        _sum: { cost: true }
+      })
+    ]);
+
+    const otherStatus = totalSent - successCount - failureCount;
+    const avgSuccessRate = totalSent > 0 ? (successCount / totalSent) * 100 : 0;
+
+    res.json({
+      success: true,
+      data: {
+        totalCampaigns: campaigns.length,
+        totalSent,
+        successfulDeliveries: successCount,
+        failedSends: failureCount,
+        otherStatus,
+        totalCost: parseFloat((costSum._sum.cost || 0).toFixed(2)),
+        avgSuccessRate: parseFloat(avgSuccessRate.toFixed(1))
+      }
+    });
+
+  } catch (error) {
+    logger.error("Error fetching DropCowboy stats", {
+      error: error.message,
+      clientName: req.params.clientName,
+    });
+    res.status(500).json({ success: false, message: "Server error", error: error.message });
+  }
+});
+
+// ============================================
+// LAZY-LOAD: GET SMS CAMPAIGNS FOR A CLIENT
+// ============================================
+router.get("/:clientId/sms/campaigns", authenticate, canViewClients, async (req, res) => {
+  try {
+    const clientId = parseInt(req.params.clientId);
+
+    // Find the MauticClient record
+    const mauticClient = await prisma.mauticClient.findFirst({
+      where: { clientId: clientId },
+      select: { id: true }
+    });
+
+    if (!mauticClient) {
+      return res.json({ success: true, data: [] });
+    }
+
+    // Get SMS campaigns for this Mautic client
+    const smsCampaigns = await prisma.mauticSms.findMany({
+      where: { clientId: mauticClient.id },
+      orderBy: { name: 'asc' }
+    });
+
+    res.json({ success: true, data: smsCampaigns });
+  } catch (error) {
+    logger.error("Error fetching SMS campaigns", {
+      error: error.message,
+      clientId: req.params.clientId,
+    });
+    res.status(500).json({ success: false, message: "Server error", error: error.message });
+  }
+});
+
+// ============================================
+// LAZY-LOAD: GET MAUTIC EMAILS FOR A CLIENT
+// ============================================
+router.get("/:clientId/mautic/emails", authenticate, canViewClients, async (req, res) => {
+  try {
+    const clientId = parseInt(req.params.clientId);
+
+    // Find the MauticClient record
+    const mauticClient = await prisma.mauticClient.findFirst({
+      where: { clientId: clientId },
+      select: { id: true }
+    });
+
+    if (!mauticClient) {
+      return res.json({ success: true, data: [] });
+    }
+
+    // Get emails for this Mautic client with optimized select
+    const emails = await prisma.mauticEmail.findMany({
+      where: { clientId: mauticClient.id },
+      select: {
+        id: true,
+        mauticEmailId: true,
+        name: true,
+        subject: true,
+        emailType: true,
+        dateAdded: true,
+        sentCount: true,
+        readCount: true,
+        clickedCount: true,
+        unsubscribed: true,
+        bounced: true,
+        readRate: true,
+        clickRate: true,
+        unsubscribeRate: true,
+        uniqueClicks: true,
+        isPublished: true,
+        publishUp: true,
+        publishDown: true,
+      },
+      orderBy: { dateAdded: 'desc' }
+    });
+
+    res.json({ success: true, data: emails });
+  } catch (error) {
+    logger.error("Error fetching Mautic emails", {
+      error: error.message,
+      clientId: req.params.clientId,
+    });
+    res.status(500).json({ success: false, message: "Server error", error: error.message });
+  }
+});
+
+// ============================================
+// LAZY-LOAD: GET MAUTIC SEGMENTS FOR A CLIENT
+// ============================================
+router.get("/:clientId/mautic/segments", authenticate, canViewClients, async (req, res) => {
+  try {
+    const clientId = parseInt(req.params.clientId);
+
+    // Find the MauticClient record
+    const mauticClient = await prisma.mauticClient.findFirst({
+      where: { clientId: clientId },
+      select: { id: true }
+    });
+
+    if (!mauticClient) {
+      return res.json({ success: true, data: [] });
+    }
+
+    // Get segments for this Mautic client
+    const segments = await prisma.mauticSegment.findMany({
+      where: { clientId: mauticClient.id },
+      select: {
+        id: true,
+        mauticSegmentId: true,
+        name: true,
+        description: true,
+        isPublished: true,
+        contactCount: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+      orderBy: { name: 'asc' }
+    });
+
+    res.json({ success: true, data: segments });
+  } catch (error) {
+    logger.error("Error fetching Mautic segments", {
+      error: error.message,
+      clientId: req.params.clientId,
+    });
+    res.status(500).json({ success: false, message: "Server error", error: error.message });
+  }
+});
+
+// ============================================
 // GET ALL CLIENTS (Role-based filtering)
 // Supports pagination via ?page=1&limit=50
 // ============================================
@@ -77,16 +568,16 @@ router.get("/", authenticate, canViewClients, async (req, res) => {
           assignments: {
             include: {
               user: {
-                select: { 
-                  id: true, 
-                  name: true, 
-                  email: true, 
+                select: {
+                  id: true,
+                  name: true,
+                  email: true,
                   role: true,
                   customRole: {
-                    select: { 
+                    select: {
                       name: true,
-                      fullAccess: true, 
-                      isTeamManager: true 
+                      fullAccess: true,
+                      isTeamManager: true
                     }
                   }
                 },
@@ -455,7 +946,7 @@ router.get(
           },
           orderBy: { name: "asc" },
         });
-        
+
         // Filter to users who are team managers
         managers = allActiveUsers.filter(u => {
           // Legacy users without customRole - check legacy role
@@ -534,7 +1025,7 @@ router.get(
       } else {
         isManager = manager.customRole?.fullAccess || manager.customRole?.isTeamManager === true;
       }
-      
+
       if (!isManager) {
         return res.status(404).json({ message: "User is not a team manager" });
       }
@@ -658,7 +1149,7 @@ router.post("/:id/assign", authenticate, canManageClients, async (req, res) => {
           message: "You can only assign clients that are assigned to you",
         });
       }
-      
+
       // Team managers can only assign to users they created or manage
       const isTeamMember = targetUser.createdById === assignedById ||
         (await prisma.user.findFirst({

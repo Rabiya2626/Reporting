@@ -1,34 +1,83 @@
-import { Users, Mail, List, Send } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Users, Mail, List, Send, Loader2 } from 'lucide-react';
 import { formatNumber } from '../../utils/mautic';
-
+import axios from 'axios';
 
 const MauticServiceStats = ({ selectedClient }) => {
+    const [stats, setStats] = useState(null);
+    const [loading, setLoading] = useState(true);
+
+    useEffect(() => {
+        const fetchStats = async () => {
+            if (!selectedClient?.mauticApiId) {
+                setLoading(false);
+                return;
+            }
+
+            try {
+                setLoading(true);
+                const response = await axios.get(`/api/mautic/clients/${selectedClient.mauticApiId}/stats`);
+                
+                if (response.data?.success) {
+                    const clientData = response.data.data.client;
+                    setStats({
+                        totalContacts: clientData.totalContacts || 0,
+                        totalEmails: clientData.totalEmails || 0,
+                        totalCampaigns: clientData.totalCampaigns || 0,
+                        totalSegments: clientData.totalSegments || 0,
+                    });
+                }
+            } catch (error) {
+                console.error('Error fetching Mautic stats:', error);
+                setStats({
+                    totalContacts: 0,
+                    totalEmails: 0,
+                    totalCampaigns: 0,
+                    totalSegments: 0,
+                });
+            } finally {
+                setLoading(false);
+            }
+        };
+
+        fetchStats();
+    }, [selectedClient?.mauticApiId]);
+
     const cards = [
         {
             title: 'Total Contacts',
-            value: formatNumber(selectedClient.totalContacts || 0),
+            value: formatNumber(stats?.totalContacts || 0),
             icon: Users,
             color: 'bg-blue-500',
         },
         {
             title: 'Total Emails',
-            value: formatNumber(selectedClient.totalEmails),
+            value: formatNumber(stats?.totalEmails || 0),
             icon: Mail,
             color: 'bg-indigo-500',
         },
         {
             title: 'Total Campaigns',
-            value: formatNumber(selectedClient.totalCampaigns || 0),
+            value: formatNumber(stats?.totalCampaigns || 0),
             icon: Send,
             color: 'bg-purple-500',
         },
         {
             title: 'Total Segments',
-            value: formatNumber(selectedClient.totalSegments),
+            value: formatNumber(stats?.totalSegments || 0),
             icon: List,
             color: 'bg-green-500',
         }
     ];
+
+    if (loading) {
+        return (
+            <div className="flex items-center justify-center py-4">
+                <Loader2 className="animate-spin text-blue-600 mr-2" size={20} />
+                <span className="text-sm text-gray-600">Loading stats...</span>
+            </div>
+        );
+    }
 
     return (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-2">

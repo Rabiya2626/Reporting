@@ -247,13 +247,165 @@ router.get("/clients/:clientId/campaigns", async (req, res) => {
 router.get("/clients/:clientId/sms", async (req, res) => {
   try {
     const { clientId } = req.params;
+    
+    // Get the Mautic client to extract the client name
+    const mauticClient = await prisma.mauticClient.findUnique({
+      where: { id: parseInt(clientId) },
+      include: { client: true }
+    });
+    
+    if (!mauticClient) {
+      return res.json({ success: true, data: [] });
+    }
+    
+    const clientName = mauticClient.client?.name || mauticClient.name;
+    
+    // Validate clientName exists
+    if (!clientName || typeof clientName !== 'string' || !clientName.trim()) {
+      return res.json({ success: true, data: [] });
+    }
+    
+    const trimmedName = clientName.trim();
+    
+    // Build search patterns based on client name
+    // For "Century Pharmaceuticals", match "Century" in campaign names
+    let searchPatterns = [trimmedName];
+    
+    // Extract first word for matching (e.g., "Century" from "Century Pharmaceuticals")
+    const firstWord = trimmedName.split(' ')[0];
+    if (firstWord && firstWord.length > 3 && firstWord !== trimmedName) {
+      searchPatterns.push(firstWord);
+    }
+    
+    // Match SMS campaigns by:
+    // 1. Direct clientId match, OR
+    // 2. Campaign name starts with any search pattern (more precise than contains)
+    const orConditions = [
+      { clientId: parseInt(clientId) }
+    ];
+    
+    searchPatterns.forEach(pattern => {
+      orConditions.push({
+        name: { startsWith: pattern, mode: 'insensitive' }
+      });
+    });
+    
     const smsCampaigns = await prisma.mauticSms.findMany({
-      where: { clientId: parseInt(clientId) },
+      where: {
+        OR: orConditions
+      },
       orderBy: { id: 'asc' }
     });
+    
     res.json({ success: true, data: smsCampaigns });
   } catch (error) {
     logger.error(error);
+    res
+      .status(500)
+      .json({
+        success: false,
+        message: "Failed to fetch SMS campaigns",
+        error: error.message,
+      });
+  }
+});
+
+// OVERALL: Get overall SMS statistics across all active clients (optimized single query)
+router.get("/clients/sms/overall-stats", async (req, res) => {
+  try {
+    // ✅ OPTIMIZED: Single query to get all SMS campaigns from active clients
+    const smsCampaigns = await prisma.mauticSms.findMany({
+      where: {
+        client: {
+          isActive: true
+        }
+      },
+      orderBy: { sentCount: 'desc' }
+    });
+
+    // Calculate aggregated stats
+    const stats = {
+      totalCampaigns: smsCampaigns.length,
+      totalSent: smsCampaigns.reduce((sum, sms) => sum + (sms.sentCount || 0), 0),
+      activeCampaigns: smsCampaigns.filter(sms => sms.sentCount > 0).length
+    };
+
+    logger.debug(`✅ Overall SMS stats: ${stats.totalCampaigns} campaigns, ${stats.totalSent} sent, ${stats.activeCampaigns} active`);
+    
+    res.json({ 
+      success: true, 
+      stats,
+      data: smsCampaigns
+    });
+  } catch (error) {
+    logger.error('Error fetching overall SMS stats:', error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch overall SMS statistics",
+      error: error.message,
+    });
+  }
+});
+
+// BULK: Get SMS campaigns for multiple clients (avoids N+1 queries)
+router.post("/clients/sms/bulk", async (req, res) => {
+  try {
+    const { clientIds } = req.body;
+    
+    if (!clientIds || !Array.isArray(clientIds) || clientIds.length === 0) {
+      return res.json({ success: true, data: [] });
+    }
+    
+    const validClientIds = clientIds.map(id => parseInt(id)).filter(id => !isNaN(id));
+    
+    // Get all Mautic clients with their names
+    const mauticClients = await prisma.mauticClient.findMany({
+      where: { id: { in: validClientIds } },
+      include: { client: true }
+    });
+    
+    // Build OR conditions for matching:
+    // 1. Direct clientId match
+    // 2. Campaign name starts with client name or first word of client name
+    const orConditions = [
+      { clientId: { in: validClientIds } }
+    ];
+    
+    // Add name-based matching for each client (using startsWith for precision)
+    mauticClients.forEach(mc => {
+      const clientName = mc.client?.name || mc.name;
+      
+      // Only proceed if clientName exists and is a non-empty string
+      if (clientName && typeof clientName === 'string' && clientName.trim()) {
+        const trimmedName = clientName.trim();
+        
+        // Match full name
+        orConditions.push({
+          name: { startsWith: trimmedName, mode: 'insensitive' }
+        });
+        
+        // Also match first word if it's meaningful (>3 chars)
+        const firstWord = trimmedName.split(' ')[0];
+        if (firstWord && firstWord.length > 3 && firstWord !== trimmedName) {
+          orConditions.push({
+            name: { startsWith: firstWord, mode: 'insensitive' }
+          });
+        }
+      }
+    });
+    
+    // Single query to get all SMS campaigns matching any condition
+    const smsCampaigns = await prisma.mauticSms.findMany({
+      where: { 
+        OR: orConditions
+      },
+      orderBy: { id: 'asc' }
+    });
+    
+    logger.debug(`✅ Bulk SMS fetch: ${smsCampaigns.length} campaigns for ${clientIds.length} clients`);
+    res.json({ success: true, data: smsCampaigns });
+  } catch (error) {
+    logger.error('Error in bulk SMS fetch:', error);
     res
       .status(500)
       .json({

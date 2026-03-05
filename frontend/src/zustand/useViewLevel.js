@@ -19,7 +19,7 @@ const useViewLevel = create((set) => ({
         selectedClient: null,
         selectedCampaign: null,
         campaigns: [],
-        savedMetrics: [],
+        savedMetrics: null,
     },
     setDCViewLevel: (viewLevel) =>
         set((state) => ({ dropcowboy: { ...state.dropcowboy, viewLevel } })),

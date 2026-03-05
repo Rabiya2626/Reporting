@@ -18,6 +18,7 @@ import VicidialDashboard from '../components/vicidial/pages/VicidialDashboard';
 import { useAuth } from '../contexts/AuthContext';
 import { usePermissions } from '../utils/permissions';
 import SmsSection from '../components/mautic/SmsSection';
+import clientService from '../services/clientService';
 
 
 export default function Services() {
@@ -38,38 +39,17 @@ export default function Services() {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
 
-    // Fetch accessible clients based on user permissions
+    // Fetch accessible clients ONCE on mount (not per service)
     useEffect(() => {
         const fetchAccessibleClients = async () => {
             try {
                 setLoading(true);
                 
-                // Fetch Mautic clients (which already include .client relationship with assignments)
-                const mauticRes = await axios.get("/api/mautic/clients");
-                const mauticClients = mauticRes.data?.data || [];
+                // ✅ Use optimized client service with caching (fetches once, cached for session)
+                const unifiedClients = await clientService.getUnifiedClients();
 
-                let accessibleClients = mauticClients;
-
-                // For non-full-access users, restrict visibility based on permissions
-                if (!hasFullAccessValue) {
-                    accessibleClients = mauticClients.filter((mauticClient) => {
-                        // Access the assignments through the .client relationship
-                        const assignments = mauticClient.client?.assignments || [];
-                        
-                        if (canManageTeam) {
-                            // Team managers can see clients they created or are assigned to
-                            const createdByThisUser = mauticClient.createdBy?.id === user.id;
-                            const assignedToUser = assignments.some(a => (a.user?.id || a.userId) === user.id);
-                            return createdByThisUser || assignedToUser;
-                        } else {
-                            // Regular users - only assigned clients
-                            return assignments.some(a => (a.user?.id || a.userId) === user.id);
-                        }
-                    });
-                }
-
-                // Extract IDs from filtered clients
-                const clientIds = accessibleClients.map(c => c.id);
+                // Extract Mautic API IDs for filtering in service dashboards
+                const clientIds = unifiedClients.map(c => c.mauticApiId).filter(Boolean);
                 setAccessibleClientIds(clientIds);
                 
                 setError(null);
@@ -189,19 +169,19 @@ export default function Services() {
                 </div>
             </div>
 
-            {/* Service Content */}
+            {/* Service Content - LAZY LOAD: Only render selected service to prevent loading all data at once */}
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
                 {selectedService === 'dropcowboy' && (
-                    <DropCowboyDashboard accessibleClientIds={accessibleClientIds} />
+                    <DropCowboyDashboard key="dropcowboy" accessibleClientIds={accessibleClientIds} />
                 )}
                 {selectedService === 'mautic' && (
-                    <MauticDashboard accessibleClientIds={accessibleClientIds} />
+                    <MauticDashboard key="mautic" accessibleClientIds={accessibleClientIds} />
                 )}
                 {selectedService === 'vicidial' && (
-                    <VicidialDashboard accessibleClientIds={accessibleClientIds} />
+                    <VicidialDashboard key="vicidial" accessibleClientIds={accessibleClientIds} />
                 )}
                 {selectedService === 'sms' && (
-                    <SmsSection accessibleClientIds={accessibleClientIds} />
+                    <SmsSection key="sms" accessibleClientIds={accessibleClientIds} />
                 )}
             </div>
         </div>

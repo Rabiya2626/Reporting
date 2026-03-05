@@ -5,6 +5,12 @@ import { Prisma } from "@prisma/client";
 import { ca } from "zod/v4/locales";
 import { cli } from "winston/lib/winston/config/index.js";
 
+// Simple in-memory cache for frequently accessed data
+const cache = {
+  mauticClientIds: { data: null, timestamp: null, ttl: 60000 }, // 60 seconds
+  campaignMappings: { data: null, timestamp: null, ttl: 60000 }, // 60 seconds
+};
+
 class DataService {
   async saveCampaignData(campaignData) {
     try {
@@ -383,9 +389,6 @@ class DataService {
                   "sent",
                   "success",
                   "delivered",
-                  "SENT",
-                  "SUCCESS",
-                  "DELIVERED",
                 ],
               },
             },
@@ -395,7 +398,7 @@ class DataService {
             where: {
               ...recordWhere,
               status: {
-                in: ["failed", "failure", "error", "FAILED", "FAILURE", "ERROR"],
+                in: ["failed", "failure", "error"],
               },
             },
           });
@@ -410,13 +413,7 @@ class DataService {
                   "delivered",
                   "failed",
                   "failure",
-                  "error",
-                  "SENT",
-                  "SUCCESS",
-                  "DELIVERED",
-                  "FAILED",
-                  "FAILURE",
-                  "ERROR"
+                  "error"
                 ],
               },
             },
@@ -720,29 +717,76 @@ class DataService {
         );
       }
 
-      // ALWAYS filter to only show campaigns linked to Mautic clients
-      // Get all Mautic client IDs
-      const mauticClients = await prisma.client.findMany({
-        where: { clientType: "mautic" },
-        select: { id: true },
-      });
+      // 🚀 OPTIMIZED: Use cached Mautic client IDs and campaign mappings
+      let mauticCampaignIds;
+      
+      // Check if cached data is still valid (within TTL)
+      const now = Date.now();
+      const cacheValid = cache.campaignMappings.data && 
+                         cache.campaignMappings.timestamp && 
+                         (now - cache.campaignMappings.timestamp) < cache.campaignMappings.ttl;
 
-      const mauticClientIds = mauticClients.map((c) => c.id);
+      if (cacheValid) {
+        // Use cached campaign IDs
+        mauticCampaignIds = cache.campaignMappings.data;
+        logger.debug(`✅ Using cached campaign mappings (${mauticCampaignIds.length} campaigns)`);
+      } else {
+        // Fetch and cache Mautic client IDs and campaign mappings
+        const mauticClients = await prisma.client.findMany({
+          where: { clientType: "mautic" },
+          select: { id: true },
+        });
 
-      // Get campaigns linked ONLY to Mautic clients
-      const mauticLinkedCampaigns = await prisma.dropCowboyCampaign.findMany({
-        where: {
-          clientId: { in: mauticClientIds },
-        },
-        select: { campaignId: true },
-      });
+        const mauticClientIds = mauticClients.map((c) => c.id);
+        cache.mauticClientIds.data = mauticClientIds;
+        cache.mauticClientIds.timestamp = now;
 
-      const mauticCampaignIds = mauticLinkedCampaigns.map((c) => c.campaignId);
+        // Get campaigns linked ONLY to Mautic clients
+        const mauticLinkedCampaigns = await prisma.dropCowboyCampaign.findMany({
+          where: {
+            clientId: { in: mauticClientIds },
+          },
+          select: { campaignId: true },
+        });
+
+        mauticCampaignIds = mauticLinkedCampaigns.map((c) => c.campaignId);
+        cache.campaignMappings.data = mauticCampaignIds;
+        cache.campaignMappings.timestamp = now;
+        
+        logger.debug(`🔄 Cached campaign mappings refreshed (${mauticCampaignIds.length} campaigns)`);
+      }
 
       // Base filter: always include only Mautic campaign IDs
-      where.campaignId = { in: mauticCampaignIds };
+      let allowedCampaignIds = mauticCampaignIds;
 
-      // Apply client filter if specified
+      // Apply clientIds filter (for access control - multiple clients)
+      // Note: clientIds might be MauticClient IDs from frontend, so we need to map them to Client IDs
+      if (filters.clientIds && filters.clientIds.length > 0) {
+        // Map MauticClient IDs to Client IDs
+        const mauticClients = await prisma.mauticClient.findMany({
+          where: { id: { in: filters.clientIds } },
+          select: { id: true, clientId: true }
+        });
+        
+        // Extract Client IDs (filter out null values)
+        const mappedClientIds = mauticClients
+          .map(mc => mc.clientId)
+          .filter(Boolean);
+        
+        // If no valid Client IDs found, use the original IDs (they might already be Client IDs)
+        const clientIdsToUse = mappedClientIds.length > 0 ? mappedClientIds : filters.clientIds;
+        
+        const clientCampaigns = await prisma.dropCowboyCampaign.findMany({
+          where: { clientId: { in: clientIdsToUse } },
+          select: { campaignId: true },
+        });
+
+        const accessibleCampaignIds = clientCampaigns.map((c) => c.campaignId);
+        // Intersect with Mautic campaigns (only campaigns that are both Mautic AND accessible)
+        allowedCampaignIds = mauticCampaignIds.filter(id => accessibleCampaignIds.includes(id));
+      }
+
+      // Apply specific client filter if specified (further narrows down the results)
       if (filters.client) {
         const client = await prisma.client.findFirst({
           where: { name: filters.client, clientType: "mautic" },
@@ -754,24 +798,17 @@ class DataService {
             select: { campaignId: true },
           });
 
-          const clientCampaignIds = clientCampaigns.map((c) => c.campaignId);
-          where.campaignId = { in: clientCampaignIds };
+          const specificClientCampaignIds = clientCampaigns.map((c) => c.campaignId);
+          // Intersect with previously allowed campaigns (AND logic)
+          allowedCampaignIds = allowedCampaignIds.filter(id => specificClientCampaignIds.includes(id));
         } else {
           // Client not found, return empty results
-          where.campaignId = { in: [] };
+          allowedCampaignIds = [];
         }
       }
 
-      // Apply clientIds filter (for access control - multiple clients)
-      if (filters.clientIds && filters.clientIds.length > 0) {
-        const clientCampaigns = await prisma.dropCowboyCampaign.findMany({
-          where: { clientId: { in: filters.clientIds } },
-          select: { campaignId: true },
-        });
-
-        const clientCampaignIds = clientCampaigns.map((c) => c.campaignId);
-        where.campaignId = { in: clientCampaignIds };
-      }
+      // Set the final filter
+      where.campaignId = { in: allowedCampaignIds };
 
       // Status filter
       if (filters.status && filters.status !== "all") {
@@ -1205,6 +1242,59 @@ class DataService {
     } catch (error) {
       logger.error("❌ Error clearing DropCowboy data:", error);
       throw error;
+    }
+  }
+
+  /**
+   * Get available clients that have DropCowboy campaigns
+   * @param {Number[]} clientIds - Optional array of accessible client IDs (might be MauticClient IDs or Client IDs)
+   * @returns {Promise<String[]>} Array of unique client names
+   */
+  async getAvailableClients(clientIds = null) {
+    try {
+      const where = {};
+      
+      // If clientIds provided, map them from MauticClient IDs to Client IDs
+      if (clientIds && clientIds.length > 0) {
+        // Try to map MauticClient IDs to Client IDs
+        const mauticClients = await prisma.mauticClient.findMany({
+          where: { id: { in: clientIds } },
+          select: { id: true, clientId: true }
+        });
+        
+        // Extract Client IDs (filter out null values)
+        const mappedClientIds = mauticClients
+          .map(mc => mc.clientId)
+          .filter(Boolean);
+        
+        // If no valid Client IDs found, use the original IDs (they might already be Client IDs)
+        const clientIdsToUse = mappedClientIds.length > 0 ? mappedClientIds : clientIds;
+        
+        where.clientId = { in: clientIdsToUse };
+      }
+
+      // Get distinct clients from campaigns
+      const campaigns = await prisma.dropCowboyCampaign.findMany({
+        where,
+        distinct: ['clientId'],
+        select: {
+          clientId: true,
+          client: {
+            select: { name: true }
+          }
+        }
+      });
+
+      // Extract and sort client names
+      const clientNames = campaigns
+        .filter(c => c.client?.name)
+        .map(c => c.client.name)
+        .sort((a, b) => a.localeCompare(b));
+
+      return clientNames;
+    } catch (error) {
+      logger.error("Error fetching available clients:", error);
+      return [];
     }
   }
 }

@@ -276,9 +276,10 @@ class StatsService {
 
       const stats = StatsService.formatStats(emailAggregate);
 
-      const [totalCampaigns, totalEmails, campaigns, topEmails] = await Promise.all([
+      const [totalCampaigns, totalEmails, totalSegments, campaigns, topEmails] = await Promise.all([
         prisma.mauticCampaign.count({ where: { clientId } }),
         prisma.mauticEmail.count({ where: { clientId, ...dateFilter } }),
+        prisma.mauticSegment.count({ where: { clientId } }),
         includeCampaigns
           ? prisma.mauticCampaign.findMany({
             where: { clientId },
@@ -346,7 +347,8 @@ class StatsService {
           client: {
             ...client,
             totalCampaigns,
-            totalEmails
+            totalEmails,
+            totalSegments
           },
           stats,
           // Click aggregates for this client (hits + unique)

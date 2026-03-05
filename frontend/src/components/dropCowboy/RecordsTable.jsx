@@ -19,6 +19,7 @@ const RecordsTable = ({ campaigns, accessibleClientIds = [] }) => {
   const { user } = useAuth();
   const [serverRecords, setServerRecords] = useState([]);
   const [totalRecords, setTotalRecords] = useState(0);
+  const [availableClients, setAvailableClients] = useState([]);
   const [currentPage, setCurrentPage] = useState(1);
   const [loadingPage, setLoadingPage] = useState(false);
   const [metrics, setMetrics] = useState({
@@ -142,18 +143,8 @@ const RecordsTable = ({ campaigns, accessibleClientIds = [] }) => {
     }
   }, [campaigns]);
 
-  // compute unique clients for dropdown (from current page and fallback campaigns)
-  const clientOptions = Array.from(
-    new Set(
-      serverRecords
-        .map((r) => r.client || "Unknown")
-        .concat(
-          (campaigns || []).map((c) => c.client || "Unknown")
-        )
-    )
-  )
-    .filter(Boolean)
-    .sort((a, b) => a.localeCompare(b));
+  // Use available clients from API response instead of computing from current page
+  const clientOptions = availableClients || [];
 
   // When currentPage changes, animate rows and restore scroll position (or scroll to top)
   useEffect(() => {
@@ -315,6 +306,11 @@ const RecordsTable = ({ campaigns, accessibleClientIds = [] }) => {
         // Extract metrics from response (already calculated by backend for ALL filtered records)
         if (json.data && json.data.metrics) {
           setMetrics(json.data.metrics);
+        }
+
+        // Extract available clients for dropdown
+        if (json.data && json.data.availableClients) {
+          setAvailableClients(json.data.availableClients);
         }
 
         // Normalize DB columns to the shape expected by the table

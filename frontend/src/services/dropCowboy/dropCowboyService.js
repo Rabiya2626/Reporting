@@ -137,6 +137,61 @@ class DropCowboyService {
       };
     }
   }
+
+  /**
+   * Get lightweight dashboard summary (aggregated stats only, no individual records)
+   * @returns {Promise<Object>} Dashboard summary
+   */
+  async getDashboardSummary() {
+    try {
+      const response = await api.get('/dashboard-summary');
+      return {
+        success: true,
+        data: response.data.data,
+        error: null
+      };
+    } catch (error) {
+      console.error('Error fetching dashboard summary:', error);
+      return {
+        success: false,
+        data: null,
+        error: error.response?.data?.message || error.message || 'Failed to fetch dashboard summary'
+      };
+    }
+  }
+
+  /**
+   * Get campaigns for a specific client (lazy-load)
+   * @param {string} clientName - Client name
+   * @returns {Promise<Object>} Campaigns data
+   */
+  async getClientCampaigns(clientName) {
+    try {
+      const encodedName = encodeURIComponent(clientName);
+      // Use axios directly since this is under /api/clients, not /api/dropcowboy
+      const token = localStorage.getItem("token");
+      const BASE_URL = import.meta.env.VITE_API_URL || "";
+      const response = await fetch(`${BASE_URL}/api/clients/${encodedName}/dropcowboy/campaigns`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      const data = await response.json();
+      return {
+        success: data.success || response.ok,
+        data: data.data || [],
+        error: data.message || null
+      };
+    } catch (error) {
+      console.error('Error fetching client campaigns:', error);
+      return {
+        success: false,
+        data: [],
+        error: error.response?.data?.message || error.message || 'Failed to fetch client campaigns'
+      };
+    }
+  }
 }
 
 // Export a singleton instance

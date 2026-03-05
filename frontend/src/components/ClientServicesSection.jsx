@@ -4,13 +4,10 @@ import MauticServiceStats from "./mautic/MauticServiceStats";
 import EmailPerformanceWidget from "./widgets/EmailPerformanceWidget";
 import VoicemailPerformanceWidget from "./widgets/VoicemailPerformanceWidget";
 import useViewLevel from "../zustand/useViewLevel";
-import { useDashboardMetrics } from "../hooks/mautic";
 
 const ClientServicesSection = ({ selectedClient, goBackToClients, openMauticCampaigns, openDropcowboyCampaigns, openSmsCampaigns }) => {
 
     const { selectedService, setSelectedService } = useViewLevel();
-    // Fetch per-client dashboard metrics (kept as a top-level hook to preserve hook order)
-    const { metrics } = useDashboardMetrics(selectedClient?.mauticApiId || null);
 
     // Auto-navigate to SMS campaigns for SMS-only clients
     useEffect(() => {
@@ -87,23 +84,23 @@ const ClientServicesSection = ({ selectedClient, goBackToClients, openMauticCamp
 
             {/* metrics in service level view */}
             {selectedService === 'mautic' && <div className="my-2 flex flex-col w-full p-1 bg-blue-50 border border-gray-100 rounded-md">
-                <MauticServiceStats selectedClient={selectedClient} metrics={metrics} />
+                <MauticServiceStats selectedClient={selectedClient} />
             </div>}
 
-            {/* Performance Widgets */}
+            {/* Performance Widgets - Only render selected service */}
             <div className="my-4">
-                {selectedService === 'mautic' && selectedClient.mauticApiId && (
+                {selectedService === 'mautic' && selectedClient.mauticApiId ? (
                     <EmailPerformanceWidget
+                        key={`email-${selectedClient.mauticApiId}`}
                         clientId={selectedClient.mauticApiId}
                         clientName={selectedClient.name}
                     />
-                )}
-
-                {selectedService === 'dropcowboy' && (
+                ) : selectedService === 'dropcowboy' ? (
                     <VoicemailPerformanceWidget
+                        key={`voicemail-${selectedClient.name}`}
                         clientName={selectedClient.name}
                     />
-                )}
+                ) : null}
             </div>
 
             {/* Header */}
