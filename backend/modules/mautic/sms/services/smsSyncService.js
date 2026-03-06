@@ -367,7 +367,7 @@ class SmsSyncService {
       logger.info(`   📥 Bulk inserting ${recordsToInsert.length} records...`);
       const result = await prisma.mauticSmsStat.createMany({
         data: recordsToInsert,
-        skipDuplicates: false
+        skipDuplicates: true  // Skip existing records to prevent duplicate errors
       });
 
       logger.info(`   ✅ Inserted ${result.count} SMS stats`);
@@ -388,7 +388,7 @@ class SmsSyncService {
    * Orchestrates: Clear → Fetch contacts → Fetch replies → Map → Store
    * Uses efficient parallel fetching for bulk data transfer
    */
-  async syncSmsStats(client, localSmsId, mauticSmsId, clearExisting = true) {
+  async syncSmsStats(client, localSmsId, mauticSmsId, clearExisting = false) {
     try {
       logger.info(`\n🔄 STARTING SMS STATS SYNC for campaign ${mauticSmsId}`);
       logger.info(`   Client: ${client.name}`);

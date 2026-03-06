@@ -525,7 +525,7 @@ router.post('/sync-all-sms-stats', async (req, res) => {
           },
           campaign.id,
           campaign.mauticId,
-          true // Clear existing
+          false // Preserve existing stats
         );
 
         logger.info(`   ✅ Synced ${statsResult.created} stats for "${campaign.name}"`);
@@ -1089,7 +1089,7 @@ async function syncSmsClientData(smsClientId) {
           smsClient, // API credentials
           localSms.id, // Local SMS ID
           campaign.id, // Mautic SMS ID
-          true // Clear existing stats
+          false // Preserve existing stats
         );
 
         logger.info(`   ✅ Synced ${statsResult.created} stats for "${campaign.name}"`);
@@ -1285,8 +1285,8 @@ router.post('/sms-clients/:clientId/campaigns/:smsId/sync-stats', async (req, re
     const clientIdInt = parseInt(clientId);
     const smsIdInt = parseInt(smsId);
     
-    // Default to clearing existing stats (fresh sync from beginning)
-    const shouldClear = clearExisting !== 'false'; // true unless explicitly set to 'false'
+    // Default to preserving existing stats (only clear if explicitly requested)
+    const shouldClear = clearExisting === 'true'; // false unless explicitly set to 'true'
 
     logger.info(`🔄 Starting sync for campaign ${smsIdInt}, clearExisting=${shouldClear}`);
 
