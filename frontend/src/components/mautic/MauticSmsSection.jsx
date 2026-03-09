@@ -329,7 +329,7 @@ const MauticSmsSection = ({ selectedClient, goBackToServices, goBackToClients })
                                                 )}
                                             </td>
                                         </tr>
-                                    ))} ̰ ̰
+                                    ))} 
                                 </tbody>}
                             </table>
                         </div>
